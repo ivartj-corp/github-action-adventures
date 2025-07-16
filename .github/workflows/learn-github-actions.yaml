@@ -6,6 +6,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: pwd
-      - run: find .
-      - run: ./script.sh
+      - run: echo FOO=BAR >> "$GITHUB_ENV"
+      - run: echo "$FOO"
