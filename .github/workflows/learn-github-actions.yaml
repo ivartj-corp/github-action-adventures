@@ -1,3 +1,4 @@
+---
 name: learn-github-actions
 run-name: ${{ github.actor }} is learning GitHub Actions
 on: [push]
@@ -6,6 +7,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install poetry
+        run: pipx install poetry
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: poetry
+      - run: |
+          cd cicdgen
+          poetry install
+          source <(poetry env activate)
+          python test.py
+      - run: |
+          cd cicdgen
+          source <(poetry env activate)
+          python test2.py
       - uses: ivartj/github-action-adventures@v2
         id: hello
         with:

@@ -1,0 +1,28 @@
+[project]
+name = "cicdgen"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Ivar Trygve Jarlsby",email = "ivartj@ivartj.org"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "typer (>=0.18.0,<0.19.0)",
+    "fs (>=2.4.16,<3.0.0)",
+    "pyyaml (>=6.0.2,<7.0.0)"
+]
+
+[project.scripts]
+cicdgen = "cicdgen.app:app"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pyright (>=1.1.405,<2.0.0)",
+    "pytest (>=8.4.2,<9.0.0)",
+    "types-pyyaml (>=6.0.12.20250915,<7.0.0.0)"
+]
