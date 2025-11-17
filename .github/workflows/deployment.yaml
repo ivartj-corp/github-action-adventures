@@ -36,10 +36,12 @@ jobs:
           git config user.name "Workflow automaton"
           git config user.email "<>"
 
+          git fetch origin "$ENVIRONMENT" || true
+
           commit_tree_args=()
-          if [[ -f ".git/refs/heads/$ENVIRONMENT" ]]; then
+          if [[ -f ".git/refs/remotes/origin/$ENVIRONMENT" ]]; then
             commit_tree_args+=(
-              -p "refs/heads/$ENVIRONMENT"
+              -p "refs/remotes/origin/$ENVIRONMENT"
             )
           fi
           
