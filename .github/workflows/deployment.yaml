@@ -1,0 +1,63 @@
+---
+name: deployment
+run-name: ${{ github.actor }} is learning GitHub Actions
+on:
+  workflow_dispatch:
+    inputs:
+      succeed:
+        description: "Is this a successful deployment?"
+        type: boolean
+        required: true
+        default: true
+      environment:
+        description: Deployment target
+        type: environment
+        required: true
+jobs:
+  deployment:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: |
+          if [[ $SUCCEED == "true" ]]; then
+            echo "deployed to $ENVIRONMENT"
+          else
+            exit 1
+          fi
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          SUCCEED: ${{ inputs.succeed }}
+
+      - run: |
+          set -euo pipefail
+
+          git config user.name "Workflow automaton"
+          git config user.email "<>"
+
+          commit_tree_args=()
+          if [[ -f ".git/refs/heads/$ENVIRONMENT" ]]; then
+            commit_tree_args+=(
+              -p "refs/heads/$ENVIRONMENT"
+            )
+          fi
+          
+          commit_tree_args+=(
+            -p HEAD
+            -m "Deployment to $ENVIRONMENT"
+          )
+
+          tree_hash="$(git show -s --format=%T)"
+          commit_tree_args+=(
+            "$tree_hash"
+          )
+
+          commit_id="$(
+            git commit-tree "${commit_tree_args[@]}"
+          )"
+
+          git update-ref "refs/heads/$ENVIRONMENT" "$commit_id"
+          git push origin "refs/heads/$ENVIRONMENT"
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
