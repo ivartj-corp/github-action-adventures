@@ -1,46 +1,36 @@
 ---
 name: learn-github-actions
 run-name: ${{ github.actor }} is learning GitHub Actions
-on: [push]
+on:
+  - push
+  - workflow_dispatch
 permissions:
   id-token: write
   contents: read
 jobs:
   check-bats-version:
-    environment: foo
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install poetry
-        run: pipx install poetry
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.13'
-          cache: poetry
-      - run: |
-          cd cicdgen
-          poetry install
-          source <(poetry env activate)
-          python test.py
-      - run: |
-          cd cicdgen
-          source <(poetry env activate)
-          python test2.py
-      - uses: ivartj/github-action-adventures@v2
-        id: hello
-        with:
-          who-to-greet: 'Mona the Octocat'
-      - name: Get the output time
-        run: echo "The time was ${{ steps.hello.outputs.time }}"
-      - run: echo "$GITHUB_WORKSPACE"
-      - run: find . -type f
       - name: 'Az CLI login'
         uses: azure/login@8c334a195cbb38e46038007b304988d888bf676a
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
           allow-no-subscriptions: true
 
       - name: 'Run az commands'
+        id: access-token
         run: |
-          az group list
+          az account get-access-token \
+              --resource-type ms-graph \
+              -o tsv \
+              --query accessToken \
+            | xargs -I{} echo access_token={} \
+            > "$GITHUB_OUTPUT"
+      - run: find /home/runner/work/github-action-adventures
+      - name: 'List groups'
+        uses: ./.github/actions/msgraft
+        with:
+          access-token: ${{ steps.access-token.outputs.access_token }}
+
