@@ -9,5 +9,10 @@ jobs:
     steps:
       - shell: pwsh
         run: |
+          Install-Module -RequiredVersion "2.28.0" -Force Microsoft.Graph.Authentication
+          Install-Module -RequiredVersion "2.28.0" -Force Microsoft.Graph.Applications
+          Install-Module -RequiredVersion "2.28.0" -Force Microsoft.Graph.Groups
+          Install-Module -RequiredVersion "2.28.0" -Force Microsoft.Graph.DirectoryObjects
+
           Get-InstalledModule | Select Name, Version
 
