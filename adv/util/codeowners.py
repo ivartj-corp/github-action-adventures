@@ -21,17 +21,12 @@ class CodeOwners:
             root_anchored = True
         if path_pattern.endswith("/"):
             directory = True
-        s = glob.translate(
-            path_pattern,
-            recursive=True,
-            include_hidden=True
-        )
+        s = glob.translate(path_pattern, recursive=True, include_hidden=True)
         if root_anchored:
             s = f"^{s}"
         if directory:
             s = s.replace(r"\z", "")
         return re.compile(s)
-        
 
     def assignees(self, path: str) -> set[str]:
         for path_pattern, assignees in reversed(self._assignments):
@@ -51,8 +46,8 @@ def parse_codeowners(s: str) -> Generator[tuple[str, set[str]]]:
             continue
         match = path_pattern.search(line)
         if match is not None:
-            path = match.group(0).replace(r'\ ', ' ')
-            assignees_str = line[match.end():].strip()
+            path = match.group(0).replace(r"\ ", " ")
+            assignees_str = line[match.end() :].strip()
             if assignees_str == "":
                 assignees = []
             else:
