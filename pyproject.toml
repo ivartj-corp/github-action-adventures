@@ -1,7 +1,19 @@
 [project]
-name = "github-action-adventures"
+name = "adv"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "cryptography>=46.0.5",
+    "typer>=0.24.1",
+]
+
+[project.scripts]
+adv = "adv.app:app"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.408",
+    "pytest>=9.0.2",
+]
