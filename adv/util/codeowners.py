@@ -8,7 +8,7 @@ class CodeOwners:
     _assignments: list[tuple[str, set[str]]]
 
     def __init__(self, s: str) -> None:
-        self._assignments = list(parse_codeowners(s))
+        self._assignments = list(_parse_codeowners(s))
         self._regex = {}
 
     @lru_cache()
@@ -28,7 +28,7 @@ class CodeOwners:
             s = s.replace(r"\z", "")
         return re.compile(s)
 
-    def assignees(self, path: str) -> set[str]:
+    def __call__(self, path: str) -> set[str]:
         for path_pattern, assignees in reversed(self._assignments):
             regex_pattern = CodeOwners._glob2regex(path_pattern)
             if regex_pattern.search(path) is not None:
@@ -36,7 +36,7 @@ class CodeOwners:
         return set()
 
 
-def parse_codeowners(s: str) -> Generator[tuple[str, set[str]]]:
+def _parse_codeowners(s: str) -> Generator[tuple[str, set[str]]]:
     comment_pattern = re.compile(r"(^|\s*)#.*$")
     path_pattern = re.compile(r"([^\s\\]|\\ )+")
     for line in s.splitlines():

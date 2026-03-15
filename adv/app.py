@@ -1,14 +1,14 @@
 import typer
 from typing import Annotated
-from cryptography.hazmat.primitives.serialization import load_pem_public_key
 import shutil
 import dataclasses
 from dataclasses import dataclass
 import subprocess
 import json
-import shlex
 from itertools import chain
 from .util.codeowners import CodeOwners
+from .util import config_util
+import yaml
 
 
 app = typer.Typer()
@@ -23,6 +23,35 @@ class Change:
 @app.command()
 def help():
     app(["--help"])
+
+
+@app.command()
+def codeowners(
+    paths: Annotated[
+        list[str],
+        typer.Argument(
+        ),
+    ],
+    codeowners_file_path: Annotated[
+        str,
+        typer.Option(
+            help="path to CODEOWNERS file",
+        ),
+    ] = "CODEOWNERS",
+) -> None:
+    with open(
+            file=codeowners_file_path,
+            encoding="utf-8",
+    ) as codeowners_file:
+        codeowners = CodeOwners(codeowners_file.read())
+
+    owners: set[str] = {
+        owner
+        for path in paths
+        for owner in codeowners(path)
+    }
+    for owner in sorted(owners):
+        print(owner)
 
 
 @app.command()
@@ -57,13 +86,11 @@ def diff(
             stdout=subprocess.PIPE,
         ).stdout.decode("utf-8")
     )
-    approvers: list[str] = list(
-        chain.from_iterable(codeowners.assignees(path) for path in paths)
-    )
+    approvers: set[str] = set(chain.from_iterable(codeowners(path) for path in paths))
 
     change = Change(
         changed_files=paths,
-        approvers=approvers,
+        approvers=list(approvers),
     )
 
     print(
@@ -73,6 +100,48 @@ def diff(
         )
     )
 
+
+@app.command()
+def config_diff(
+    base_config_path: Annotated[
+        str,
+        typer.Argument(help="base config"),
+    ],
+    head_config_path: Annotated[
+        str,
+        typer.Argument(help="head config"),
+    ],
+    null_terminate: Annotated[
+        bool,
+        typer.Option(
+            "-z", "--null-terminate",
+            help="terminate paths with null bytes instead of newlines",
+        ),
+    ] = False,
+) -> None:
+    with (
+        open(
+            file=base_config_path,
+            encoding="utf-8",
+        ) as base_file,
+        open(
+            file=head_config_path,
+            encoding="utf-8",
+        ) as head_file,
+    ):
+        base_config = yaml.safe_load(base_file)
+        head_config = yaml.safe_load(head_file)
+
+    changed_key_paths: list[str] = []
+    for key_path in config_util.changed_key_paths(base_config, head_config):
+        changed_key_paths.append("/".join(str(part) for part in key_path))
+    changed_key_paths.sort()
+
+    terminator = '\0' if null_terminate else '\n'
+    for key_path in changed_key_paths:
+        if terminator in key_path:
+            raise Exception(f'terminator exists in path {key_path}')
+        print(key_path, end=terminator)
 
 if __name__ == "__main__":
     app()
