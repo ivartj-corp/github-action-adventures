@@ -1,7 +1,10 @@
 name: Config review
 
 on:
-  pull_request_target:
+  pull_request_review:
+    types:
+      - submitted
+  pull_request:
     types:
       - opened
       - synchronize
@@ -13,11 +16,18 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   config_review:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ vars.CONFIG_REVIEWER_APP_ID }}
+          private-key: ${{ secrets.CONFIG_REVIEWER_PRIVATE_KEY }}
+
       - name: Default branch checkout
         uses: actions/checkout@v4
 
@@ -44,41 +54,68 @@ jobs:
           BASE_SHA: "${{ github.event.pull_request.base.sha }}"
           HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
           TMPDIR: "${{ runner.temp }}"
-          GH_TOKEN: "${{ github.token }}"
+          GH_TOKEN: "${{ steps.app-token.outputs.token }}"
+          GITHUB_REPOSITORY: "${{ github.repository }}"
+          PR_NUMBER: "${{ github.event.pull_request.number }}"
         run: |
           set -euo pipefail
 
+          echo "Changed configuration settings:" >&2
           adv config-diff \
             <(git show "${BASE_SHA}:config.sandbox.yaml") \
             <(git show "${HEAD_SHA}:config.sandbox.yaml") \
-            --map :config.sandbox.yaml/: \
-            --map variables/::variables/ \
             --null-terminate \
-          | xargs -0 adv codeowners \
-          | sed -E 's/^@//' \
-          > "${TMPDIR}/approvers-mixed"
+          | tee "${TMPDIR}/changed_config_settings" \
+          | xargs -0 -I{} printf "  %s\n" {} >&2
 
-          cat "${TMPDIR}/approvers-mixed" \
-          | while read -r approver; do
-              if [[ $approver == */* ]]; then
-                # organization team
-                org="$(echo "$approver" | cut -d/ -f 1)"
-                team_slug="$(echo "$approver" | cut -d/ -f 2)"
-                echo "Fetching members of team $approver..." >&2
-                gh api "/orgs/${org}/teams/${team_slug}/members"
-                  --paginate \
-                  --jq '.[].login'
-              else
-                # user
-                echo "$approver"
-              fi
-            done \
+          require_admin_approval=
+          while read -r -d '' changed_config_setting; do
+            case "$changed_config_setting" in
+              variables/modules/*/*)
+                ;;
+              *)
+                require_admin_approval=yes
+                ;;
+            esac
+          done \
+          < "${TMPDIR}/changed_config_settings"
+
+          if [[ -z $require_admin_approval ]]; then
+            echo "no config.sandbox.yaml changes requiring admin approval" >&2
+            exit 0
+          else
+            echo "one or more config.sandbox.yaml changes require admin approval" >&2
+          fi
+
+          echo "Fetching list of repository admins" >&2
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/${GITHUB_REPOSITORY}/collaborators" \
+            --paginate \
+            --jq '.[] | select(.permissions.admin) | .login' \
+          | tee "${TMPDIR}/admins" \
+          | xargs -d'\n' -I{} printf "  %s\n" {} >&2
+
+          echo "Fetching list of users that have approved the pull request" >&2
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
+            --paginate \
+            --jq '.[] | select(.state == "APPROVED") | .user.login' \
           | LC_ALL=C sort -u \
-          > "${TMPDIR}/approvers-users"
+          | tee "${TMPDIR}/approved_by" \
+          | xargs -d'\n' -I{} printf "  %s\n" {} >&2
 
-          echo "## user approvers"
-          cat "${TMPDIR}/approvers-users"
-
-
-
+          readarray -t admin_approvers < <(grep -x -F "$(cat "${TMPDIR}/admins")" "${TMPDIR}/approved_by")
+          admin_approved=
+          for admin_approver in "${admin_approvers[@]}"; do
+            echo "approved by admin ${admin_approver}" >&2
+            admin_approved=yes
+          done
+          if [[ -z $admin_approved ]]; then
+            echo "not approved by any admins" >&2
+            exit 1
+          fi
 
