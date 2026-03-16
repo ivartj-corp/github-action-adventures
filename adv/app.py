@@ -28,10 +28,10 @@ def help():
 @app.command()
 def codeowners(
     paths: Annotated[
-        list[str],
+        list[str] | None,
         typer.Argument(
         ),
-    ],
+    ] = None,
     codeowners_file_path: Annotated[
         str,
         typer.Option(
@@ -39,6 +39,8 @@ def codeowners(
         ),
     ] = "CODEOWNERS",
 ) -> None:
+    if paths is None:
+        paths = []
     with open(
             file=codeowners_file_path,
             encoding="utf-8",
