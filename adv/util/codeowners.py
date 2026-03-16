@@ -1,4 +1,4 @@
-from typing import Generator
+from collections.abc import Generator
 import re
 import glob
 from functools import lru_cache
@@ -9,11 +9,10 @@ class CodeOwners:
 
     def __init__(self, s: str) -> None:
         self._assignments = list(_parse_codeowners(s))
-        self._regex = {}
 
     @lru_cache()
     @staticmethod
-    def _glob2regex(path_pattern: str) -> re.Pattern:
+    def _glob2regex(path_pattern: str) -> re.Pattern[str]:
         root_anchored = False
         directory = False
         while path_pattern.startswith("/"):
@@ -41,7 +40,7 @@ def _parse_codeowners(s: str) -> Generator[tuple[str, set[str]]]:
     path_pattern = re.compile(r"([^\s\\]|\\ )+")
     for line in s.splitlines():
         line = comment_pattern.sub("", line)
-        line.strip()
+        line = line.strip()
         if line == "":
             continue
         match = path_pattern.search(line)

@@ -9,7 +9,7 @@ from itertools import chain
 from .util.codeowners import CodeOwners
 from .util import config_util
 import yaml
-
+import re
 
 app = typer.Typer()
 
@@ -111,6 +111,17 @@ def config_diff(
         str,
         typer.Argument(help="head config"),
     ],
+    map: Annotated[
+        list[str] | None,
+        typer.Option(
+            "-m", "--map",
+            help=(
+                "Map configuration setting paths to file paths with syntax SRC_PATH:DESTINATION_PATH:BASEPREFIX."
+                " Path prefixes are matched against SRC_PATH, which gets replaced by DESTINATION_PATH."
+                " The base filename gets prefixed with BASEPREFIX."
+            )
+        )
+    ] = None,
     null_terminate: Annotated[
         bool,
         typer.Option(
@@ -119,6 +130,15 @@ def config_diff(
         ),
     ] = False,
 ) -> None:
+    if map is None:
+        map = []
+    mappings: list[tuple[str, str,str]] = []
+    for m in map:
+        if len([c for c in m if c == ":"]) != 2:
+            raise Exception("the --map/-m option expects a SRC_PATH:DESTINATION_PATH:BASEPREFIX syntax")
+        src, dest, prefix = m.split(":")
+        mappings.append((src, dest, prefix))
+
     with (
         open(
             file=base_config_path,
@@ -129,8 +149,8 @@ def config_diff(
             encoding="utf-8",
         ) as head_file,
     ):
-        base_config = yaml.safe_load(base_file)
-        head_config = yaml.safe_load(head_file)
+        base_config: object = yaml.safe_load(base_file)  # pyright: ignore[reportAny]
+        head_config: object = yaml.safe_load(head_file)  # pyright: ignore[reportAny]
 
     changed_key_paths: list[str] = []
     for key_path in config_util.changed_key_paths(base_config, head_config):
@@ -139,6 +159,13 @@ def config_diff(
 
     terminator = '\0' if null_terminate else '\n'
     for key_path in changed_key_paths:
+        for src, dest, prefix in reversed(mappings):
+            if key_path.startswith(src):
+                key_path = dest + key_path.removeprefix(src)
+                if (basenamematch := re.search(r"(^|\/)([^\/]+)$", key_path)) is not None:
+                    key_path = key_path[:basenamematch.start(2)] + prefix + basenamematch.group(2)
+                break
+
         if terminator in key_path:
             raise Exception(f'terminator exists in path {key_path}')
         print(key_path, end=terminator)

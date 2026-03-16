@@ -1,0 +1,17 @@
+environment:
+  name: sandbox
+  project: my-sandbox
+  validation-type: dev
+  selected:
+    - modules/
+
+variables:
+  modules:
+    environment: Sandbox
+    id_prefix: id
+
+    foo:
+      x: 1
+
+    bar:
+      x: 2

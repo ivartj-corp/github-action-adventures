@@ -1,0 +1,54 @@
+name: Config review
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+    branches:
+      - main
+    paths:
+      - config.sandbox.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  config_review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Default branch checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch head and base of pull request
+        env:
+          BASE_SHA: "${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
+        run: |
+          git fetch origin "$BASE_SHA" "$HEAD_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v1
+
+      - name: pip install
+        run: pip install .
+
+      - name: foo
+        env:
+          BASE_SHA: "${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
+        run: |
+          adv config-diff \
+            <(git show "${BASE_SHA}:config.sandbox.yaml") \
+            <(git show "${HEAD_SHA}:config.sandbox.yaml") \
+            --map :config.sandbox.yaml/: \
+            --map variables/::variables/ \
+            --null-terminate \
+          | xargs -0 adv codeowners
+
