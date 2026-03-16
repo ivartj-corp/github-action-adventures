@@ -43,12 +43,38 @@ jobs:
         env:
           BASE_SHA: "${{ github.event.pull_request.base.sha }}"
           HEAD_SHA: "${{ github.event.pull_request.head.sha }}"
+          TMPDIR: "${{ runner.temp }}"
+          GH_TOKEN: "${{ github.token }}"
         run: |
+          set -euo pipefail
+
           adv config-diff \
             <(git show "${BASE_SHA}:config.sandbox.yaml") \
             <(git show "${HEAD_SHA}:config.sandbox.yaml") \
             --map :config.sandbox.yaml/: \
             --map variables/::variables/ \
             --null-terminate \
-          | xargs -0 adv codeowners
+          | xargs -0 adv codeowners \
+          | sed -E 's/^@//' \
+          > "${TMPDIR}/approvers-mixed"
+
+          cat "${TMPDIR}/approvers-mixed" \
+          | while read -r approver; do
+              if [[ $approver == */* ]]; then  # organization team
+                org="$(echo "$team" | cut -d/ -f 1)"
+                team_slug="$(echo "$team" | cut -d/ -f 2)"
+                gh api "/orgs/${org}/teams/${team_slug}/members" \
+                  --jq '.[].login'
+              else  # user
+                echo "$approver"
+              fi
+            done \
+          | LC_ALL=C sort -u \
+          > "${TMPDIR}/approvers-users"
+
+          echo "## user approvers"
+          cat "${TMPDIR}/approvers-users"
+
+
+
 
