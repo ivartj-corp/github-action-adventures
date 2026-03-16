@@ -60,12 +60,16 @@ jobs:
 
           cat "${TMPDIR}/approvers-mixed" \
           | while read -r approver; do
-              if [[ $approver == */* ]]; then  # organization team
+              if [[ $approver == */* ]]; then
+                # organization team
                 org="$(echo "$approver" | cut -d/ -f 1)"
                 team_slug="$(echo "$approver" | cut -d/ -f 2)"
-                gh api "/orgs/${org}/teams/${team_slug}/members" \
+                echo "Fetching members of team $approver..." >&2
+                gh api "/orgs/${org}/teams/${team_slug}/members"
+                  --paginate \
                   --jq '.[].login'
-              else  # user
+              else
+                # user
                 echo "$approver"
               fi
             done \
