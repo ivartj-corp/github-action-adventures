@@ -6,8 +6,8 @@ environment:
     - modules/
 
 variables:
+  environment: Sandbox
   modules:
-    environment: Sandbox
     id_prefix: id
 
     foo:
