@@ -12,12 +12,16 @@ jobs:
   check-bats-version:
     runs-on: ubuntu-latest
     steps:
-      - run: echo true
+      - run: echo "fromJson('[false]').*"
         if: fromJson('[false]').*
-      - run: echo true
+      - run: echo "fromJson('[1]').*"
         if: fromJson('[1]').*
-      - run: echo true
+      - run: echo "fromJson('[]').*"
         if: fromJson('[]').*
+      - run: fromJson('[]') == fromJson('[]')
+        if: fromJson('[]') == fromJson('[]')
+      - run: fromJson('[]') == fromJson('[1]')
+        if: fromJson('[]') == fromJson('[1]')
       - uses: actions/checkout@v4
       - name: 'Az CLI login'
         uses: azure/login@8c334a195cbb38e46038007b304988d888bf676a
