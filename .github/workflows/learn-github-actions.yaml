@@ -24,7 +24,7 @@ jobs:
         if: fromJson('[]') == fromJson('[1]')
       - run: echo fromJson('[]') == fromJson('[1]')
         if: fromJson('[]') == fromJson('[1]')
-      - run: echi join(fromJson('[]'), '') == ''
+      - run: echo join(fromJson('[]'), '') == ''
         if: join(fromJson('[]'), '') == ''
       - run: echo join(fromJson('[1]'), '') == ''
         if: join(fromJson('[1]'), '') == ''
