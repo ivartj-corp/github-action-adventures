@@ -11,8 +11,6 @@ on:
       - reopened
     branches:
       - main
-    paths:
-      - config.sandbox.yaml
   merge_group:
     types:
       - checks_requested
