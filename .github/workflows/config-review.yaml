@@ -13,6 +13,12 @@ on:
       - main
     paths:
       - config.sandbox.yaml
+  merge_group:
+    types:
+      - checks_requested
+    branches:
+      - main
+    
 
 permissions:
   contents: read
