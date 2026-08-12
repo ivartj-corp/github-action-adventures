@@ -9,6 +9,7 @@ jobs:
     environment: automergeback
     steps:
     - uses: actions/checkout@v7
+      fetch-depth: 0  # need to fetch at least to merge base
     - uses: actions/create-github-app-token@v3
       id: app-token
       with:
