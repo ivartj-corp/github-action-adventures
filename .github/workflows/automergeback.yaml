@@ -28,6 +28,7 @@ jobs:
       env:
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
     - run: |
+        set -x
         git update-ref refs/heads/automergeback HEAD
         git fetch origin dev:dev
         git checkout dev
