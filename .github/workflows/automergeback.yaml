@@ -31,7 +31,7 @@ jobs:
         set -x
         git fetch origin dev:dev
         git checkout dev
-        git rev-list dev
-        git rev-list automergeback
+        git rev-list dev >&2
+        git rev-list automergeback >&2
         git merge automergeback
         git push origin dev
