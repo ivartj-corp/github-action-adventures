@@ -8,6 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: automergeback
     steps:
+    - uses: actions/checkout@v7
     - uses: actions/create-github-app-token@v3
       id: app-token
       with:
