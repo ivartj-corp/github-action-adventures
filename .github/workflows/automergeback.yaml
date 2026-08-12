@@ -5,7 +5,7 @@ on:
 jobs:
   mergeback:
     runs-on: ubuntu-latest
-    environmennt: automergeback
+    environment: automergeback
     steps:
     - uses: actions/create-github-app-token@v3
       id: app-token
