@@ -1,0 +1,12 @@
+---
+name: deployment
+on:
+  workflow_dispatch:
+jobs:
+  deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "# HELLO" >> "$GITHUB_STEP_SUMMARY"
+          echo "## HELLO" >> "$GITHUB_STEP_SUMMARY"
+          echo "### HELLO" >> "$GITHUB_STEP_SUMMARY"

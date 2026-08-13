@@ -1,8 +1,9 @@
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   push:
     branches:
     - automergeback
+    - dev
 jobs:
   mergeback:
     runs-on: ubuntu-latest
@@ -31,9 +32,20 @@ jobs:
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
     - run: |
         set -x
-        git fetch origin dev:dev
-        git checkout dev
-        git rev-list dev >&2
-        git rev-list automergeback >&2
-        git merge automergeback
-        git push origin dev
+        case "$GITHUB_REF" in
+          refs/heads/automergeback)
+            git fetch origin dev:dev
+            git checkout dev
+            git rev-list dev >&2
+            git rev-list automergeback >&2
+            git merge automergeback
+            git push origin dev
+            ;;
+          refs/heads/dev)
+            git fetch origin dev:dev
+            git rev-list dev >&2
+            git rev-list automergeback >&2
+            git merge automergeback
+            git push origin dev
+            ;;
+        esac
