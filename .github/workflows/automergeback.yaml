@@ -39,4 +39,4 @@ jobs:
           [test]=dev
         )
         target_branch="${source2target[$source_branch]}"
-        .github/workflow/automergeback.sh "$source_branch" "$target_branch"
+        .github/workflows/automergeback.sh "$source_branch" "$target_branch"
