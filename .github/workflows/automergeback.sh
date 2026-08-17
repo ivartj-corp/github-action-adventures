@@ -43,7 +43,7 @@ fi
 source_branch="$1"
 target_branch="$2"
 
-if [[ -z $GH_TOKEN ]] && gh auth status &>/dev/null; then
+if ! gh auth status &>/dev/null; then
   echo "$0: Please run \`gh auth login\`"
   exit 1
 fi
