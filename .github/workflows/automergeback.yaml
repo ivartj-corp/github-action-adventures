@@ -21,7 +21,6 @@ jobs:
         permission-contents: write
     - name: Git authentication
       id: get-user-id
-      run: 
       env:
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
         GH_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
@@ -31,7 +30,13 @@ jobs:
         git config --global user.email "${gh_user-id}+${GH_APP_SLUG}[bot]@users.noreply.github.com"
         gh auth setup-git
     - env:
-        SOURCE_REF: ${{ github.ref }}
+        GH_TOKEN: ${{ steps.app-token.outputs.token }}
       run: |
-        source_branch="${SOURCE_REF#refs/heads/}"  # strip refs/heads/prefix
-        .github/workflow/automergeback.sh --source-branch="$source_branch"
+        set -euo pipefail
+        source_branch="${GITHUB_REF#refs/heads/}"  # strip refs/heads/prefix
+        declare -A source2target=(
+          [main]=test
+          [test]=dev
+        )
+        target_branch="${source2target[$source_branch]}"
+        .github/workflow/automergeback.sh "$source_branch" "$target_branch"
