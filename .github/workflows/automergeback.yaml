@@ -10,6 +10,9 @@ jobs:
     environment: automergeback
     steps:
 
+    - name: Checkout
+      uses: actions/checkout@v7
+
     - name: Get GitHub App token
       uses: actions/create-github-app-token@v3
       id: app-token
