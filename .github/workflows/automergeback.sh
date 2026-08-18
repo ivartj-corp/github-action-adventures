@@ -5,9 +5,26 @@ set -euo pipefail
 dry_run=
 debug=
 mergeback_pr_label=
+validate_merge_command=true
 
 function usage {
-  echo "usage: $0 SOURCE_BRANCH [--dry-run] [--debug] [--mergeback-pr-label PULL_REQUEST_LABEL]"
+  echo "Usage: $0 SOURCE_BRANCH"
+  cat <<'EOF'
+  [--mergeback-pr-label=PULL_REQUEST_LABEL]
+  [--validate-merge-command=BASH_COMMAND]
+  [--dry-run] [--debug] 
+
+Description:
+
+  After hotfixes are applied to the main and test branches, this script to
+  merge those hotfixes back to the upstream branches. For the main branch, this
+  is the test branch, and for the test branch it is the dev branch.
+
+  If the script encounters a merge conflict or if the command specified in
+  `--validate-merge-command=` fails after the merge, the script will create a
+  GitHub pull request with the label specified in `--mergeback-pr-label=`.
+
+EOF
 }
 
 function main {
@@ -16,6 +33,7 @@ function main {
     --long dry-run \
     --long debug \
     --long mergeback-pr-label: \
+    --long validate-merge-command: \
     -- "$@"
   )"
   eval set -- "$opts"
@@ -37,6 +55,10 @@ function main {
         mergeback_pr_label="$2"
         shift 2
         ;;
+      --validate-merge-command)
+        validate_merge_command="$2"
+        shift 2
+        ;;
       --)
         shift
         break
@@ -50,12 +72,12 @@ function main {
   source_branch="$1"
 
   if ! gh auth status &>/dev/null; then
-    echo "$0: Please run \`gh auth login\`"
+    echo "$0: Please run \`gh auth login\`" >&2
     exit 1
   fi
 
-  if ! git diff --quiet; then
-    echo "$0: clean changes before running this command"
+  if ! (git diff --quiet && git diff --quiet --cached); then
+    echo "$0: clean changes before running this command" >&2
     exit 1
   fi
 
@@ -106,19 +128,40 @@ function mergeback {
   git checkout -B "$mergeback_branch" "origin/$target_branch" --no-track --quiet
   if git merge --no-ff "origin/$source_branch" -m "Automerging $source_branch into $target_branch" >/dev/null; then
 
-    # VALIDATE HERE
-    # IF VALIDATION FAILS, CREATE PR WITH ERROR
+    if (eval "$validate_merge_command"); then
+      echo "$0: Merged code passed validation; pushing merge to $target_branch" >&2
+      if [[ -z $dry_run ]]; then
+        git push origin "HEAD:$target_branch" --quiet
+      else
+        git update-ref "refs/remotes/origin/$target_branch" HEAD
+      fi
 
-    echo "$0: pushing merge to $target_branch" >&2
-    if [[ -z $dry_run ]]; then
-      git push origin "HEAD:$target_branch" --quiet
+      mergeback "$target_branch"
     else
-      git update-ref "refs/remotes/origin/$target_branch" HEAD
-    fi
+      echo "$0: Merged code failed validation; pushing branch and creating PR." >&2
 
-    mergeback "$target_branch"
+      echo "$0: Pushing branch for PR..." >&2
+      if [[ -z $dry_run ]]; then
+        git push origin "$mergeback_branch" --force --quiet
+      fi
+
+      local gh_pr_create_args
+      gh_pr_create_args=(
+        --title "Mergeback from '$source_branch' to '$target_branch'"
+        --body "Merged code failed validation, so automatic merge was aborted."
+        --head "$mergeback_branch"
+        --base "$target_branch"
+      )
+      if [[ -n $mergeback_pr_label ]]; then
+        gh_pr_create_args+=(--label "$mergeback_pr_label")
+      fi
+      echo "$0: Creating PR..." >&2
+      if [[ -z $dry_run ]]; then
+        gh pr create "${gh_pr_create_args[@]}"
+      fi
+    fi
   else
-    echo "$0: Merge conflict, pushing branch based on $source_branch and creating PR" >&2
+    echo "$0: Merge conflict; pushing branch based on $source_branch and creating PR" >&2
 
     git merge --abort
     git reset --hard "origin/${source_branch}" --quiet

@@ -1,10 +1,12 @@
+name: "Mergeback"
+run-name: "Mergeback from ${{ github.ref }}"
 on:
   push:
     branches:
     - main
     - test
-name: "Mergeback"
-run-name: "Mergeback from ${{ github.ref }}"
+permissions:
+  contents: read
 jobs:
   mergeback:
     runs-on: ubuntu-latest
@@ -13,6 +15,8 @@ jobs:
 
     - name: Checkout
       uses: actions/checkout@v7
+      with:
+        persist-credentials: 'false'  # the remainder of the workflow will use different credentials
 
     - name: Get GitHub App token
       uses: actions/create-github-app-token@v3
@@ -32,7 +36,7 @@ jobs:
       run: |
         gh_user_id="$(gh api "/users/${GH_APP_SLUG}[bot]" --jq .id)"
         git config --global user.name "${GH_APP_SLUG}[bot]"
-        git config --global user.email "${gh_user-id}+${GH_APP_SLUG}[bot]@users.noreply.github.com"
+        git config --global user.email "${gh_user_id}+${GH_APP_SLUG}[bot]@users.noreply.github.com"
         gh auth setup-git
 
     - name: Mergeback
