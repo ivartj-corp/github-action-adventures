@@ -94,7 +94,7 @@ function mergeback {
 
   local mergeback_branch
   mergeback_branch="mergeback/${target_branch}-$(git rev-list -n1 --abbrev-commit --abbrev=8 "origin/${source_branch}")"
-  git checkout -B "$mergeback_branch" "origin/$target_branch" --no-track
+  git checkout -B "$mergeback_branch" "origin/$target_branch" --no-track --quiet
   if git merge --no-ff "origin/$source_branch" -m "Automerging $source_branch into $target_branch" >/dev/null; then
 
     # VALIDATE HERE
