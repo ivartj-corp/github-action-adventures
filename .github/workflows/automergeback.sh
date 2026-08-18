@@ -81,7 +81,8 @@ function mergeback {
     exit
   fi
 
-  git checkout -B "mergeback/$target_branch" "origin/$target_branch"
+  mergeback_branch="mergeback/${target_branch}-$(git rev-list -n1 --abbrev-commit --abbrev=8 "origin/${source_branch}")"
+  git checkout -B "$mergeback_branch" "origin/$target_branch"
   if git merge --no-ff "origin/$source_branch" -m "Automerging $source_branch into $target_branch"; then
 
     # VALIDATE HERE
@@ -98,6 +99,7 @@ function mergeback {
   else
     echo "$0: merge conflict, creating PR" >&2
     if [[ -z $dry_run ]]; then
+      git push origin "HEAD:${mergeback_branch}" --force
       gh pr create \
         --title "Mergeback from '$source_branch' to '$target_branch'" \
         --body "Unable to automatically mergeback because of merge conflict." \
