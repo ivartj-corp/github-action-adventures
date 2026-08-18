@@ -4,9 +4,10 @@ set -euo pipefail
 
 dry_run=
 debug=
+mergeback_pr_label=
 
 function usage {
-  echo "usage: $0 SOURCE_BRANCH [--dry-run] [--debug]"
+  echo "usage: $0 SOURCE_BRANCH [--dry-run] [--debug] [--mergeback-pr-label PULL_REQUEST_LABEL]"
 }
 
 function main {
@@ -14,6 +15,7 @@ function main {
     --long help \
     --long dry-run \
     --long debug \
+    --long mergeback-pr-label: \
     -- "$@"
   )"
   eval set -- "$opts"
@@ -30,6 +32,10 @@ function main {
       --debug|-x)
         debug=y
         shift
+        ;;
+      --mergeback-pr-label)
+        mergeback_pr_label="$2"
+        shift 2
         ;;
       --)
         shift
@@ -81,9 +87,10 @@ function mergeback {
     exit
   fi
 
+  local mergeback_branch
   mergeback_branch="mergeback/${target_branch}-$(git rev-list -n1 --abbrev-commit --abbrev=8 "origin/${source_branch}")"
   git checkout -B "$mergeback_branch" "origin/$target_branch" --no-track
-  if git merge --no-ff "origin/$source_branch" -m "Automerging $source_branch into $target_branch"; then
+  if git merge --quiet --no-ff "origin/$source_branch" -m "Automerging $source_branch into $target_branch"; then
 
     # VALIDATE HERE
     # IF VALIDATION FAILS, CREATE PR WITH ERROR
@@ -98,16 +105,25 @@ function mergeback {
     mergeback "$target_branch"
   else
     echo "$0: merge conflict, creating PR" >&2
+
     git merge --abort
     git reset --hard "origin/${source_branch}"
     if [[ -z $dry_run ]]; then
       git push origin "$mergeback_branch" --force
-      gh pr create \
-        --title "Mergeback from '$source_branch' to '$target_branch'" \
-        --body "Unable to automatically mergeback because of merge conflict." \
-        --head "$mergeback_branch" \
-        --base "$target_branch" \
-        --label mergeback-ci-failure
+    fi
+
+    local gh_pr_create_args
+    gh_pr_create_args=(
+      --title "Mergeback from '$source_branch' to '$target_branch'"
+      --body "Unable to automatically mergeback because of merge conflict."
+      --head "$mergeback_branch"
+      --base "$target_branch"
+    )
+    if [[ -n $mergeback_pr_label ]]; then
+      gh_pr_create_args+=(--label "$mergeback_pr_label")
+    fi
+    if [[ -z $dry_run ]]; then
+      gh pr create "${gh_pr_create_args[@]}"
     fi
   fi
 }
