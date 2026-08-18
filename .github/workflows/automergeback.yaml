@@ -3,6 +3,7 @@ on:
     branches:
     - main
     - test
+name: "Mergeback"
 run-name: "Mergeback from ${{ github.ref }}"
 jobs:
   mergeback:
