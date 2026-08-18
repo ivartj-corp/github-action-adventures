@@ -102,7 +102,7 @@ function mergeback {
 
     echo "$0: pushing merge to $target_branch" >&2
     if [[ -z $dry_run ]]; then
-      git push origin "HEAD:$target_branch" >/dev/null
+      git push origin "HEAD:$target_branch" --quiet
     else
       git update-ref "refs/remotes/origin/$target_branch" HEAD
     fi
@@ -115,7 +115,7 @@ function mergeback {
     git reset --hard "origin/${source_branch}" --quiet
     echo "$0: Pushing branch for PR..." >&2
     if [[ -z $dry_run ]]; then
-      git push origin "$mergeback_branch" --force >/dev/null
+      git push origin "$mergeback_branch" --force --quiet
     fi
 
     local gh_pr_create_args
