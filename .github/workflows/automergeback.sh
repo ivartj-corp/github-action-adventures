@@ -6,14 +6,13 @@ dry_run=
 debug=
 mergeback_pr_label=
 validate_merge_command=true
-recurse=
 
 function usage {
   echo "Usage: $0 SOURCE_BRANCH"
   cat <<'EOF'
   [--mergeback-pr-label=PULL_REQUEST_LABEL]
   [--validate-merge-command=BASH_COMMAND]
-  [--dry-run] [--debug] [--recurse]
+  [--dry-run] [--debug]
 
 Description:
 
@@ -26,6 +25,8 @@ Description:
   `--validate-merge-command=` fails after the merge, the script will create a
   GitHub pull request with the label specified in `--mergeback-pr-label=`.
 
+  `--dry-run` and `--debug` are intended for local testing.
+
 EOF
 }
 
@@ -34,7 +35,6 @@ function main {
     --long help \
     --long dry-run \
     --long debug \
-    --long recurse \
     --long mergeback-pr-label: \
     --long validate-merge-command: \
     -- "$@"
@@ -52,10 +52,6 @@ function main {
         ;;
       --debug|-x)
         debug=y
-        shift
-        ;;
-      --recurse)
-        recurse=y
         shift
         ;;
       --mergeback-pr-label)
@@ -106,10 +102,10 @@ function mergeback {
 
   if [[ -z $target_branch ]]; then
     echo "$0: no target branch for source branch '$source_branch' exiting" >&2
-    exit
+    exit 1
   fi
 
-  # Make sure we have the full commit history of both branches (no shallow clones).
+  echo "$0: Making sure we have the full commit history of both branches (no shallow clones)." >&2
   git_fetch_args=(
     origin
     "refs/heads/${source_branch}:refs/remotes/origin/${source_branch}"
@@ -126,13 +122,16 @@ function mergeback {
   fi
 
   if git merge-base --is-ancestor "origin/$source_branch" "origin/$target_branch"; then
-    printf "$0: Source branch '%s' is already part of the history of target branch '%s'\n" "$source_branch" "$target_branch" >&2
+    echo "$0: Source branch '$source_branch' is already part of the history of target branch '$target_branch'" >&2
     exit
   fi
 
   local mergeback_branch
   mergeback_branch="mergeback/${target_branch}-$(git rev-list -n1 --abbrev-commit --abbrev=8 "origin/${source_branch}")"
+  echo "$0: Creating initial mergeback ${mergeback_branch} branch based on target branch ${target_branch}" >&2
   git checkout -B "$mergeback_branch" "origin/$target_branch" --no-track --quiet
+
+  echo "$0: Attempting to merge source branch ${source_branch}" >&2
   if git merge --no-ff "origin/$source_branch" -m "Automerging $source_branch into $target_branch" >/dev/null; then
     echo "$0: Successfully merged code without merge conflict" >&2
 
@@ -142,13 +141,6 @@ function mergeback {
         git push origin "HEAD:$target_branch" --quiet
       else
         git update-ref "refs/remotes/origin/$target_branch" HEAD
-      fi
-
-      if [[ -n $recurse ]]; then
-        # If we use GITHUB_TOKEN, there is a safeguard against workflows
-        # triggering other workflows, so we we need to recurse within the
-        # workflow.
-        mergeback "$target_branch"
       fi
     else
       echo "$0: Merged code failed validation; pushing branch and creating PR." >&2
@@ -174,15 +166,18 @@ function mergeback {
       fi
     fi
   else
-    echo "$0: Merge conflict; pushing branch based on $source_branch and creating PR" >&2
+    echo "$0: Encountered merge conflict." >&2
 
+    echo "$0: Resetting $mergeback_branch to source branch ${source_branch}." >&2
     git merge --abort
     git reset --hard "origin/${source_branch}" --quiet
-    echo "$0: Pushing branch for PR..." >&2
+
+    echo "$0: Pushing $mergeback_branch." >&2
     if [[ -z $dry_run ]]; then
       git push origin "$mergeback_branch" --force --quiet
     fi
 
+    echo "$0: Creating pull request." >&2
     local gh_pr_create_args
     gh_pr_create_args=(
       --title "Mergeback from '$source_branch' to '$target_branch'"
@@ -193,7 +188,6 @@ function mergeback {
     if [[ -n $mergeback_pr_label ]]; then
       gh_pr_create_args+=(--label "$mergeback_pr_label")
     fi
-    echo "$0: Creating PR..." >&2
     if [[ -z $dry_run ]]; then
       gh pr create "${gh_pr_create_args[@]}"
     fi
