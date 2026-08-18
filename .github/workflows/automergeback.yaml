@@ -34,9 +34,4 @@ jobs:
       run: |
         set -euo pipefail
         source_branch="${GITHUB_REF#refs/heads/}"  # strip refs/heads/prefix
-        declare -A source2target=(
-          [main]=test
-          [test]=dev
-        )
-        target_branch="${source2target[$source_branch]}"
-        .github/workflows/automergeback.sh "$source_branch" "$target_branch"
+        .github/workflows/automergeback.sh "$source_branch"
