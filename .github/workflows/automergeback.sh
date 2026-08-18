@@ -83,11 +83,17 @@ function mergeback {
   if [[ -z $dry_run ]]; then
     # Make sure we have the full commit history of both branches (no shallow clones).
     # Not run on dry run so that we can maintain the illusion that the target branch is updated on a second call to this function.
+    git_fetch_args=(
+      origin
+      "refs/heads/${source_branch}:refs/remotes/origin/${source_branch}"
+      "refs/heads/${target_branch}:refs/remotes/origin/${target_branch}"
+      --force
+      --quiet
+    )
     if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
-      git fetch --unshallow
+      git_fetch_args+=(--unshallow)
     fi
-    git fetch origin "refs/heads/${source_branch}:refs/remotes/origin/${source_branch}" --force
-    git fetch origin "refs/heads/${target_branch}:refs/remotes/origin/${target_branch}" --force
+    git fetch "${git_fetch_args[@]}"
   fi
 
   if git merge-base --is-ancestor "origin/$source_branch" "origin/$target_branch"; then
