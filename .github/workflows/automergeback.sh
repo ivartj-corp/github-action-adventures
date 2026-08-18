@@ -83,8 +83,7 @@ function mergeback {
   fi
 
   git checkout -B "mergeback/$target_branch" "origin/$target_branch"
-  git merge --no-ff "origin/$source_branch" -m "Automerging $source_branch into $target_branch"
-  if ! [[ -f .git/MERGE_HEAD ]]; then
+  if git merge --no-ff "origin/$source_branch" -m "Automerging $source_branch into $target_branch"; then
 
     # VALIDATE HERE
     # IF VALIDATION FAILS, CREATE PR WITH ERROR
