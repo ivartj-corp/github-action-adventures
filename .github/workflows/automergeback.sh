@@ -6,7 +6,7 @@ dry_run=
 debug=
 
 function usage {
-  echo "usage: $0 [--dry-run] SOURCE_BRANCH"
+  echo "usage: $0 SOURCE_BRANCH [--dry-run] [--debug]"
 }
 
 function main {
@@ -14,7 +14,6 @@ function main {
     --long help \
     --long dry-run \
     --long debug \
-    --long no-fetch \
     -- "$@"
   )"
   eval set -- "$opts"
