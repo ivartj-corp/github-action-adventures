@@ -98,6 +98,8 @@ function mergeback {
     mergeback "$target_branch"
   else
     echo "$0: merge conflict, creating PR" >&2
+    git merge --abort
+    git reset --hard "origin/${source_branch}"
     if [[ -z $dry_run ]]; then
       git push origin "$mergeback_branch" --force
       gh pr create \
