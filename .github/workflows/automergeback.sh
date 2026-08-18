@@ -54,6 +54,11 @@ function main {
     exit 1
   fi
 
+  if ! git diff --quiet; then
+    echo "$0: clean changes before running this command"
+    exit 1
+  fi
+
   if [[ -n $debug ]]; then
     set -x
   fi
@@ -90,7 +95,7 @@ function mergeback {
   local mergeback_branch
   mergeback_branch="mergeback/${target_branch}-$(git rev-list -n1 --abbrev-commit --abbrev=8 "origin/${source_branch}")"
   git checkout -B "$mergeback_branch" "origin/$target_branch" --no-track
-  if git merge --quiet --no-ff "origin/$source_branch" -m "Automerging $source_branch into $target_branch"; then
+  if git merge --no-ff "origin/$source_branch" -m "Automerging $source_branch into $target_branch" >/dev/null; then
 
     # VALIDATE HERE
     # IF VALIDATION FAILS, CREATE PR WITH ERROR
@@ -104,12 +109,13 @@ function mergeback {
 
     mergeback "$target_branch"
   else
-    echo "$0: merge conflict, creating PR" >&2
+    echo "$0: Merge conflict, pushing branch based on $source_branch and creating PR" >&2
 
     git merge --abort
-    git reset --hard "origin/${source_branch}"
+    git reset --hard "origin/${source_branch}" --quiet
+    echo "$0: Pushing branch for PR..." >&2
     if [[ -z $dry_run ]]; then
-      git push origin "$mergeback_branch" --force
+      git push origin "$mergeback_branch" --force >/dev/null
     fi
 
     local gh_pr_create_args
@@ -122,6 +128,7 @@ function mergeback {
     if [[ -n $mergeback_pr_label ]]; then
       gh_pr_create_args+=(--label "$mergeback_pr_label")
     fi
+    echo "$0: Creating PR..." >&2
     if [[ -z $dry_run ]]; then
       gh pr create "${gh_pr_create_args[@]}"
     fi
