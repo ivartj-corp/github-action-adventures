@@ -6,19 +6,21 @@ dry_run=
 debug=
 mergeback_pr_label=
 validate_merge_command=true
+recurse=
 
 function usage {
   echo "Usage: $0 SOURCE_BRANCH"
   cat <<'EOF'
   [--mergeback-pr-label=PULL_REQUEST_LABEL]
   [--validate-merge-command=BASH_COMMAND]
-  [--dry-run] [--debug] 
+  [--dry-run] [--debug] [--recurse]
 
 Description:
 
-  After hotfixes are applied to the main and test branches, this script to
-  merge those hotfixes back to the upstream branches. For the main branch, this
-  is the test branch, and for the test branch it is the dev branch.
+  After hotfixes are applied to the main and test branches, this script should
+  merge those hotfixes back to the upstream branches. For the main branch, the
+  upstream branch is the test branch, and for the test branch it is the dev
+  branch.
 
   If the script encounters a merge conflict or if the command specified in
   `--validate-merge-command=` fails after the merge, the script will create a
@@ -32,6 +34,7 @@ function main {
     --long help \
     --long dry-run \
     --long debug \
+    --long recurse \
     --long mergeback-pr-label: \
     --long validate-merge-command: \
     -- "$@"
@@ -49,6 +52,10 @@ function main {
         ;;
       --debug|-x)
         debug=y
+        shift
+        ;;
+      --recurse)
+        recurse=y
         shift
         ;;
       --mergeback-pr-label)
@@ -102,19 +109,19 @@ function mergeback {
     exit
   fi
 
+  # Make sure we have the full commit history of both branches (no shallow clones).
+  git_fetch_args=(
+    origin
+    "refs/heads/${source_branch}:refs/remotes/origin/${source_branch}"
+    "refs/heads/${target_branch}:refs/remotes/origin/${target_branch}"
+    --force
+    --quiet
+  )
+  if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+    git_fetch_args+=(--unshallow)
+  fi
   if [[ -z $dry_run ]]; then
-    # Make sure we have the full commit history of both branches (no shallow clones).
     # Not run on dry run so that we can maintain the illusion that the target branch is updated on a second call to this function.
-    git_fetch_args=(
-      origin
-      "refs/heads/${source_branch}:refs/remotes/origin/${source_branch}"
-      "refs/heads/${target_branch}:refs/remotes/origin/${target_branch}"
-      --force
-      --quiet
-    )
-    if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
-      git_fetch_args+=(--unshallow)
-    fi
     git fetch "${git_fetch_args[@]}"
   fi
 
@@ -127,6 +134,7 @@ function mergeback {
   mergeback_branch="mergeback/${target_branch}-$(git rev-list -n1 --abbrev-commit --abbrev=8 "origin/${source_branch}")"
   git checkout -B "$mergeback_branch" "origin/$target_branch" --no-track --quiet
   if git merge --no-ff "origin/$source_branch" -m "Automerging $source_branch into $target_branch" >/dev/null; then
+    echo "$0: Successfully merged code without merge conflict" >&2
 
     if (eval "$validate_merge_command"); then
       echo "$0: Merged code passed validation; pushing merge to $target_branch" >&2
@@ -136,7 +144,12 @@ function mergeback {
         git update-ref "refs/remotes/origin/$target_branch" HEAD
       fi
 
-      mergeback "$target_branch"
+      if [[ -n $recurse ]]; then
+        # If we use GITHUB_TOKEN, there is a safeguard against workflows
+        # triggering other workflows, so we we need to recurse within the
+        # workflow.
+        mergeback "$target_branch"
+      fi
     else
       echo "$0: Merged code failed validation; pushing branch and creating PR." >&2
 
