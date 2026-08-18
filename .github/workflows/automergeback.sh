@@ -54,6 +54,11 @@ function main {
     exit 1
   fi
 
+  if ! git diff --quiet; then
+    echo "$0: clean changes before running this command"
+    exit 1
+  fi
+
   if [[ -n $debug ]]; then
     set -x
   fi
@@ -107,7 +112,7 @@ function mergeback {
     echo "$0: Merge conflict, pushing branch based on $source_branch and creating PR" >&2
 
     git merge --abort
-    git reset --hard "origin/${source_branch}"
+    git reset --hard "origin/${source_branch}" --quiet
     echo "$0: Pushing branch for PR..." >&2
     if [[ -z $dry_run ]]; then
       git push origin "$mergeback_branch" --force >/dev/null
