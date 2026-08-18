@@ -103,7 +103,7 @@ function mergeback {
       gh pr create \
         --title "Mergeback from '$source_branch' to '$target_branch'" \
         --body "Unable to automatically mergeback because of merge conflict." \
-        --head "$source_branch" \
+        --head "$mergeback_branch" \
         --base "$target_branch" \
         --label mergeback-ci-failure
     fi
