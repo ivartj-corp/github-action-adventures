@@ -47,4 +47,4 @@ jobs:
       run: |
         set -euo pipefail
         source_branch="${GITHUB_REF#refs/heads/}"  # strip refs/heads/ prefix
-        .github/workflows/automergeback.sh "$source_branch" --mergeback-pr-label=mergeback-ci-failure
+        .github/workflows/automergeback.sh "$source_branch" --mergeback-pr-label=mergeback
