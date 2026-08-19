@@ -20,7 +20,6 @@ import shlex
 import subprocess
 import sys
 import typing
-import itertools
 
 
 logger = logging.getLogger(os.path.basename(__file__))
@@ -35,7 +34,7 @@ def run(
     base_command: str, *extra_args: str, check: bool = True, stdout: int | None = None, stderr: int | None = None, capture_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command, logging it first, and (by default) raising on failure."""
-    args = list(itertools.chain(shlex.split(base_command), extra_args))
+    args = [*shlex.split(base_command), *extra_args]
     logger.debug("+ %s", " ".join(args))
     return subprocess.run(
         args,
@@ -151,7 +150,7 @@ def mergeback(
         ]
         if is_shallow_repository:
             git_fetch_args.append("--unshallow")
-        _ = run(*git_fetch_args)
+        _ = run(*git_fetch_args, check=True)
 
     if (
         run(
@@ -185,6 +184,7 @@ def mergeback(
         "git checkout --no-track --quiet",
         f"-B{mergeback_branch}",
         f"origin/{target_branch}",
+        check=True,
     )
 
     logger.info("Attempting to merge source branch %s", source_branch)
@@ -209,8 +209,8 @@ def mergeback(
 
     logger.info("Encountered merge conflict.")
     logger.info("Resetting %s to source branch %s.", mergeback_branch, source_branch)
-    _ = run("git merge --abort")
-    _ = run("git reset --hard --quiet", f"origin/{source_branch}")
+    _ = run("git merge --abort", check=True)
+    _ = run("git reset --hard --quiet", f"origin/{source_branch}", check=True)
 
     return push_branch_and_create_pr(
         source_branch,
@@ -232,7 +232,7 @@ def push_branch_and_create_pr(
 ) -> int:
     logger.info("Pushing %s.", mergeback_branch)
     if not dry_run:
-        _ = run(*shlex.split("git push origin --force --quiet"), mergeback_branch)
+        _ = run(*shlex.split("git push origin --force --quiet"), mergeback_branch, check=True)
 
     logger.info("Creating pull request.")
     gh_pr_create_args = [
@@ -247,6 +247,7 @@ def push_branch_and_create_pr(
     if not dry_run:
         completed_process = run(*gh_pr_create_args, check=True)
         pr_url = completed_process.stdout.strip()
+        _ = run("gh pr merge --merge --auto --delete-branch", pr_url, check=True)
 
     return 0
 
