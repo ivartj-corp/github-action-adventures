@@ -20,6 +20,7 @@ import shlex
 import subprocess
 import sys
 import typing
+import itertools
 
 
 logger = logging.getLogger(os.path.basename(__file__))
@@ -31,14 +32,18 @@ SOURCE_TO_TARGET_BRANCH = {
 
 
 def run(
-    *args: str, check: bool = True, quiet_stdout: bool = False
-) -> subprocess.CompletedProcess[bytes]:
+    base_command: str, *extra_args: str, check: bool = True, stdout: int | None = None, stderr: int | None = None, capture_output: bool = False,
+) -> subprocess.CompletedProcess[str]:
     """Run a command, logging it first, and (by default) raising on failure."""
+    args = list(itertools.chain(shlex.split(base_command), extra_args))
     logger.debug("+ %s", " ".join(args))
     return subprocess.run(
         args,
         check=check,
-        stdout=subprocess.DEVNULL if quiet_stdout else None,
+        stdout=stdout,
+        stderr=stderr,
+        text=True,
+        capture_output=capture_output,
     )
 
 
@@ -51,11 +56,6 @@ def main() -> int:
     _ = argument_parser.add_argument(
         "source_branch",
         help="Branch which has received updates that we wish to merge back to the target branch.",
-    )
-    _ = argument_parser.add_argument(
-        "--validate-merge-command",
-        help="Shell command to run after a successful merge to validate the merged code.",
-        default="true",
     )
     _ = argument_parser.add_argument(
         "--mergeback-pr-label",
@@ -77,7 +77,6 @@ def main() -> int:
     args = argument_parser.parse_args(sys.argv[1:])
 
     source_branch = typing.cast(str, args.source_branch)
-    validate_merge_command = typing.cast(str, args.validate_merge_command)
     mergeback_pr_label = typing.cast(str | None, args.mergeback_pr_label)
     dry_run = typing.cast(bool, args.dry_run)
     debug = typing.cast(bool, args.debug)
@@ -100,8 +99,8 @@ def main() -> int:
         return 1
 
     if (
-        subprocess.run(
-            shlex.split("gh auth status"),
+        run(
+            "gh auth status",
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         ).returncode
@@ -111,8 +110,8 @@ def main() -> int:
         return 1
 
     if (
-        subprocess.run(shlex.split("git diff --quiet")).returncode != 0
-        or subprocess.run(shlex.split("git diff --quiet --cached")).returncode != 0
+        run("git diff --quiet").returncode != 0
+        or run("git diff --quiet --cached").returncode != 0
     ):
         logger.critical("clean changes before running this command")
         return 1
@@ -120,7 +119,6 @@ def main() -> int:
     return mergeback(
         source_branch,
         target_branch,
-        validate_merge_command,
         mergeback_pr_label,
         dry_run,
     )
@@ -129,7 +127,6 @@ def main() -> int:
 def mergeback(
     source_branch: str,
     target_branch: str,
-    validate_merge_command: str,
     mergeback_pr_label: str | None,
     dry_run: bool,
 ) -> int:
@@ -137,11 +134,10 @@ def mergeback(
         "Making sure we have the full commit history of both branches (no shallow clones)."
     )
     is_shallow_repository = (
-        subprocess.run(
-            shlex.split("git rev-parse --is-shallow-repository"),
+        run(
+            "git rev-parse --is-shallow-repository",
             check=True,
             capture_output=True,
-            text=True,
         ).stdout.strip()
         == "true"
     )
@@ -158,12 +154,10 @@ def mergeback(
         _ = run(*git_fetch_args)
 
     if (
-        subprocess.run(
-            [
-                *shlex.split("git merge-base --is-ancestor"),
-                f"origin/{source_branch}",
-                f"origin/{target_branch}",
-            ]
+        run(
+            "git merge-base --is-ancestor",
+            f"origin/{source_branch}",
+            f"origin/{target_branch}",
         ).returncode
         == 0
     ):
@@ -174,14 +168,11 @@ def mergeback(
         )
         return 0
 
-    source_commit = subprocess.run(
-        [
-            *shlex.split("git rev-list -n1 --abbrev-commit --abbrev=8"),
-            f"origin/{source_branch}",
-        ],
+    source_commit = run(
+        "git rev-list -n1 --abbrev-commit --abbrev=8",
+        f"origin/{source_branch}",
         check=True,
         capture_output=True,
-        text=True,
     ).stdout.strip()
     mergeback_branch = f"mergeback/{target_branch}-{source_commit}"
 
@@ -191,51 +182,35 @@ def mergeback(
         target_branch,
     )
     _ = run(
-        *shlex.split("git checkout --no-track --quiet"),
+        "git checkout --no-track --quiet",
         f"-B{mergeback_branch}",
         f"origin/{target_branch}",
     )
 
     logger.info("Attempting to merge source branch %s", source_branch)
-    merge_result = subprocess.run(
-        [
-            *shlex.split("git merge --no-ff"),
-            f"origin/{source_branch}",
-            f"-mAutomerging {source_branch} into {target_branch}",
-        ],
+    merge_result = run(
+        "git merge --no-ff",
+        f"origin/{source_branch}",
+        f"-mAutomerging {source_branch} into {target_branch}",
         stdout=subprocess.DEVNULL,
     )
 
     if merge_result.returncode == 0:
         logger.info("Successfully merged code without merge conflict")
 
-        validation_result = subprocess.run(validate_merge_command, shell=True)
-        if validation_result.returncode == 0:
-            logger.info(
-                "Merged code passed validation; pushing merge to %s", target_branch
-            )
-            if not dry_run:
-                _ = run(*shlex.split("git push --quiet origin"), f"HEAD:{target_branch}")
-            else:
-                _ = run(
-                    *shlex.split("git update-ref"), f"refs/remotes/origin/{target_branch}", "HEAD"
-                )
-            return 0
-
-        logger.info("Merged code failed validation; pushing branch and creating PR.")
         return push_branch_and_create_pr(
             source_branch,
             target_branch,
             mergeback_branch,
             mergeback_pr_label,
             dry_run,
-            body="Merged code failed validation, so automatic merge was aborted.",
+            body=f"Mergeback of hotfixes from {source_branch} to {target_branch}. No merge conflicts.",
         )
 
     logger.info("Encountered merge conflict.")
     logger.info("Resetting %s to source branch %s.", mergeback_branch, source_branch)
-    _ = run(*shlex.split("git merge --abort"))
-    _ = run(*shlex.split("git reset --hard --quiet"), f"origin/{source_branch}")
+    _ = run("git merge --abort")
+    _ = run("git reset --hard --quiet", f"origin/{source_branch}")
 
     return push_branch_and_create_pr(
         source_branch,
@@ -243,7 +218,7 @@ def mergeback(
         mergeback_branch,
         mergeback_pr_label,
         dry_run,
-        body="Unable to automatically mergeback because of merge conflict.",
+        body=f"Mergeback of hotfixes from {source_branch} to {target_branch}. This PR contains merge conflicts.",
     )
 
 
@@ -270,7 +245,8 @@ def push_branch_and_create_pr(
     if mergeback_pr_label:
         gh_pr_create_args.append(f"--label={mergeback_pr_label}")
     if not dry_run:
-        _ = run(*gh_pr_create_args)
+        completed_process = run(*gh_pr_create_args, check=True)
+        pr_url = completed_process.stdout.strip()
 
     return 0
 
