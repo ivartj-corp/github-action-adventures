@@ -1,0 +1,14 @@
+name: Merge queue
+on:
+  merge_group:
+    types: [checks_requested]
+    branches: [main]
+  push:
+    branches: [main]
+jobs:
+  gate:
+    # if: github.event_name != 'push' || github.actor == 'cdf-automatic-mergeback[bot]'
+    runs-on: ubuntu-latest
+    steps:
+    - run: |
+        echo "hello $GITHUB_ACTOR"
