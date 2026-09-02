@@ -9,6 +9,7 @@ jobs:
     outputs:
       modules: ${{ steps.init.outputs.modules }}
     steps:
+      - uses: actions/checkout@v7
       - id: init
         run: |
           set -euo pipefail
