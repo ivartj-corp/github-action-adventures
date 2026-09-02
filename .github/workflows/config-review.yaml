@@ -44,9 +44,6 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: pip install
-        run: pip install .
-
       - name: foo
         env:
           BASE_SHA: "${{ github.event.pull_request.base.sha }}"
@@ -57,6 +54,8 @@ jobs:
           PR_NUMBER: "${{ github.event.pull_request.number }}"
         run: |
           set -euo pipefail
+
+          source .venv/bin/activate
 
           declare -a changed_settings
           adv config-diff \
