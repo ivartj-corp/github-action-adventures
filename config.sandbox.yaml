@@ -3,7 +3,8 @@ environment:
   project: my-sandbox
   validation-type: dev
   selected:
-    - modules/
+    - modules/foo
+    - modules/bar
 
 variables:
   environment: Sandbox
