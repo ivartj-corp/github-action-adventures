@@ -31,7 +31,7 @@ jobs:
           )"
           (
             echo 'modules<<EOF'
-            echo "$changed_modules" | jq -R | jq -s -c
+            echo "$changed_modules" | jq -R 'select(length != 0)' | jq -s -c
             echo 'EOF'
           ) >> "$GITHUB_OUTPUT"
   deploy:
