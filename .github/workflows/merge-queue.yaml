@@ -16,7 +16,7 @@ jobs:
         run: |
           set -euo pipefail
           set -x
-          selected_modules="$(<config.sandbox.yaml yq -o json | jq .environment.selected -r)"
+          selected_modules="$(<config.sandbox.yaml yq -o json | jq '.environment.selected[]' -r)"
           changed_modules="$(
             git diff --name-only HEAD^ \
             | (grep -o -F "$selected_modules" || true) \
