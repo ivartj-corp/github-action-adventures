@@ -11,10 +11,6 @@ on:
       - reopened
     branches:
       - main
-  merge_group:
-    types:
-      - checks_requested
-    
 
 permissions:
   contents: read
@@ -129,7 +125,3 @@ jobs:
             exit 1
           fi
 
-      - name: sleep 20 minutes
-        if: github.event_name == 'merge_group'
-        run: sleep 1200
-      
