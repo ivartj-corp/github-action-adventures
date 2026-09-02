@@ -1,1 +1,1 @@
-foo test
+foo
