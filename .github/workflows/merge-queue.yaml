@@ -33,16 +33,28 @@ jobs:
             echo "$changed_modules" | jq -R 'select(length != 0)' | jq -s -c
             echo 'EOF'
           ) >> "$GITHUB_OUTPUT"
-  deploy:
+
+  module-foo:
     runs-on: ubuntu-latest
-    needs: gate
-    if: ${{ needs.gate.outputs.modules != null && join(fromJson(needs.gate.outputs.modules)) != '' }}
-    strategy:
-      matrix:
-        module: ${{ fromJson(needs.gate.outputs.modules) }}
+    needs:
+      - gate
+    if: >-
+      !failure() && !cancelled()
+      && needs.gate.outputs.modules != null
+      && contains(fromJson(needs.gate.outputs.modules), 'modules/foo')
     steps:
       - run: |
-          echo "$module"
-        env:
-          module: ${{ matrix.module }}
+          echo "foo"
 
+  module-bar:
+    runs-on: ubuntu-latest
+    needs:
+      - gate
+      - module-foo
+    if: >-
+      !failure() && !cancelled()
+      && needs.gate.outputs.modules != null
+      && contains(fromJson(needs.gate.outputs.modules), 'modules/bar')
+    steps:
+      - run: |
+          echo "foo"
