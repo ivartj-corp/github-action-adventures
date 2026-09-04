@@ -1,1 +1,1 @@
-bar test
+bar
