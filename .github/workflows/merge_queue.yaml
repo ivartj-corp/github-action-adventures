@@ -29,10 +29,20 @@ jobs:
             <config.sandbox.yaml yq -o json \
             | jq '.environment.selected[]' -r
           )"
+          old_selected_modules="$(
+            git show 'HEAD^:config.sandbox.yaml' \
+            | yq -o json \
+            | jq '.environment.selected[]' -r
+          )"
+          new_selected_modules="$(
+            echo "$selected_modules" \
+            | (grep -v -x -F "$old_selected_modules" || true)
+          )"
           changed_modules_json="$(
             git diff --name-only HEAD^ \
             | python .github/workflows/merge_queue.py parentpaths \
             | (grep -o -x -F "$selected_modules" || true) \
+            | cat <(echo "$new_selected_modules") \
             | LC_ALL=C sort -u \
             | jq -R \
             | jq -s -c
