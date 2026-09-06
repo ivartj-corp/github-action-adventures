@@ -37,9 +37,9 @@ jobs:
             git diff --name-only HEAD^ \
             | python .github/workflows/merge_queue.py parentpaths \
             | (grep -o -x -F "$selected_modules" || true) \
-            | cat <(echo "$new_selected_modules") \
+            | cat - <(echo "$new_selected_modules") \
             | LC_ALL=C sort -u \
-            | jq -R \
+            | jq -R 'select(length != 0)' \
             | jq -s -c
           )"
           dependency_layers_json="$(
