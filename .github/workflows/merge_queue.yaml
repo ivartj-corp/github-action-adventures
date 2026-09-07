@@ -80,6 +80,7 @@ jobs:
     strategy:
       matrix:
         module: ${{ fromJson(needs.gate.outputs.dependency_layers_json)[0] }}
+    environment: ${{ matrix.module }}
     steps:
       - env:
           module_name: ${{ matrix.module }}
@@ -95,6 +96,7 @@ jobs:
     strategy:
       matrix:
         module: ${{ fromJson(needs.gate.outputs.dependency_layers_json)[1] }}
+    environment: ${{ matrix.module }}
     steps:
       - env:
           module_name: ${{ matrix.module }}
@@ -110,6 +112,7 @@ jobs:
     strategy:
       matrix:
         module: ${{ fromJson(needs.gate.outputs.dependency_layers_json)[2] }}
+    environment: ${{ matrix.module }}
     steps:
       - env:
           module_name: ${{ matrix.module }}
