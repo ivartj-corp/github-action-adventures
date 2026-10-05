@@ -1,0 +1,35 @@
+name: Flows App Submission
+on:
+  issues:
+    types:
+      - opened
+      - edited
+      - reopened
+jobs:
+  flows-app-submit:
+    if: |-
+      startsWith(github.event.issue.title, '[Flows App]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Parse issue
+        id: issue-parser
+        uses: issue-ops/parser@9ffc25992adc3c586f7b7ad95e833f0c8b331da5
+        with:
+          body: ${{ github.event.issue.body }}
+          issue-form-template: flows-app.yaml
+
+      - run: |
+          set -euo pipefail
+          echo "$issue_json"
+
+          signature="$(echo "$issue_json" | jq -r .signature)"
+          echo "$signature"
+          bundle="$(echo "$issue_json" | jq -r .bundle)"
+          echo "$bundle"
+        env:
+          issue_json: ${{ steps.issue-parser.outputs.json }}
+          signature: ${{ steps.issue-parser.outputs.parsed_signature }}
+          bundle: ${{ steps.issue-parser.outputs.parsed_bundle }}
+
+    # - uses: actions/checkout@v7
