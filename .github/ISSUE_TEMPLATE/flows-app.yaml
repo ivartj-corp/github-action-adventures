@@ -1,0 +1,21 @@
+name: Flows App submission
+description: Submit a Flows App
+title: '[Flows App]: '
+# labels: ["flows-app"]
+# assignees: ["some[bot]"]
+type: task
+body:
+  - type: upload
+    id: bundle
+    attributes:
+      label: Upload bundle (.zip)
+      description: ZIP file in .cognite-bundles/ directory after you run `npx @cognite/cli apps deploy`
+    validations:
+      required: true
+  - type: upload
+    id: signature
+    attributes:
+      label: Upload signature file (.dev.sig)
+      description: SIG file in .cognite-bundles/ directory after you run `npx @cognite/cli apps sign`
+    validations:
+      required: true
