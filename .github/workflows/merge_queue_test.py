@@ -1,40 +1,40 @@
 from .merge_queue import (
-        dependency_layers,
+        get_deplvls,
         CircularDependencyException,
 )
 
 
-def test_dependency_layers_0() -> None:
-    layers = dependency_layers(tuple[tuple[str, frozenset[str]], ...]())
-    assert layers == ()
+def test_get_deplvls_0() -> None:
+    deplvls = get_deplvls(tuple[tuple[str, frozenset[str]], ...]())
+    assert deplvls == ()
 
 
-def test_dependency_layers_1() -> None:
-    layers = dependency_layers((("foo", frozenset()),))
-    assert layers == ({"foo"},)
+def test_get_deplvls_1() -> None:
+    deplvls = get_deplvls((("foo", frozenset()),))
+    assert deplvls == ({"foo"},)
 
 
-def test_dependency_layers_2() -> None:
-    layers = dependency_layers((("foo", frozenset({"bar", "baz"})),))
-    assert layers == ({"bar", "baz"}, {"foo"})
+def test_get_deplvls_2() -> None:
+    deplvls = get_deplvls((("foo", frozenset({"bar", "baz"})),))
+    assert deplvls == ({"bar", "baz"}, {"foo"})
         
 
-def test_dependency_layers_3() -> None:
-    layers = dependency_layers((
+def test_get_deplvls_3() -> None:
+    deplvls = get_deplvls((
         ("foo", frozenset({"bar", "baz"})),
         ("bar", frozenset({"baz", "zoo"})),
     ))
-    assert layers == (
+    assert deplvls == (
         {"baz", "zoo"},
         {"bar"},
         {"foo"},
     )
 
 
-def test_dependency_layers_4() -> None:
+def test_get_deplvls_4() -> None:
     import pytest
     with pytest.raises(CircularDependencyException):
-        _ = dependency_layers((
+        _ = get_deplvls((
             ("foo", frozenset({"bar", "baz"})),
             ("bar", frozenset({"baz", "foo"})),
         ))

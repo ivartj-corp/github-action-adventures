@@ -5,3 +5,5 @@ __pycache__
 *\~
 /.hypothesis/**
 /.ipynb_checkpoints/**
+__marimo__
+.#*

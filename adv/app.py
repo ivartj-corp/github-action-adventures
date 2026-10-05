@@ -88,7 +88,11 @@ def diff(
             stdout=subprocess.PIPE,
         ).stdout.decode("utf-8")
     )
-    approvers: set[str] = set(chain.from_iterable(codeowners(path) for path in paths))
+    approvers: set[str] = set(
+        codeowner
+        for path in paths
+        for codeowner in codeowners(path)
+    )
 
     change = Change(
         changed_files=paths,
