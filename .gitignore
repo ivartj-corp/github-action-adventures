@@ -5,3 +5,4 @@ __pycache__
 *\~
 /.hypothesis/**
 /.ipynb_checkpoints/**
+/node_modules/**

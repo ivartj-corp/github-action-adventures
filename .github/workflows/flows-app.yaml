@@ -12,24 +12,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Parse issue
-        id: issue-parser
-        uses: issue-ops/parser@9ffc25992adc3c586f7b7ad95e833f0c8b331da5
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          body: ${{ github.event.issue.body }}
-          issue-form-template: flows-app.yaml
+          node-version: 24.x
 
       - run: |
           set -euo pipefail
+          npm install
+          issue_json="$(
+            node .github/workflows/parse-issue.mjs \
+              <(echo "$issue_body") \
+              .github/ISSUE_TEMPLATE/flows-app.yaml
+          )"
           echo "$issue_json"
-
           signature="$(echo "$issue_json" | jq -r .signature)"
           echo "$signature"
           bundle="$(echo "$issue_json" | jq -r .bundle)"
           echo "$bundle"
         env:
-          issue_json: ${{ steps.issue-parser.outputs.json }}
-          signature: ${{ steps.issue-parser.outputs.parsed_signature }}
-          bundle: ${{ steps.issue-parser.outputs.parsed_bundle }}
+          issue_body: ${{ github.event.issue.body }}
 
     # - uses: actions/checkout@v7
