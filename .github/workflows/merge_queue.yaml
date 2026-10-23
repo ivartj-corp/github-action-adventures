@@ -16,6 +16,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
+      - name: Print event payload
+        env:
+          event: ${{ toJSON(github.event) }}
+        run: |-
+          echo "$event"
       - id: orchestrate
         run: |
           set -euo pipefail
