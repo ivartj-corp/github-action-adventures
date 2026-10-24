@@ -5,4 +5,9 @@ __pycache__
 *\~
 /.hypothesis/**
 /.ipynb_checkpoints/**
+__marimo__
+.#*
+**/.terraform/**
+*.tfstate
+*.tfstate.backup
 /node_modules/**
