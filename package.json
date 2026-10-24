@@ -1,0 +1,15 @@
+{
+  "name": "github-action-adventures",
+  "version": "1.0.0",
+  "description": "This is a test. \\ This is a README.md. \\ This is a test.",
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@github/issue-parser": "github:github/issue-parser#7bd5b274501f9e2c621ae8cc1418c63afcfda1e5"
+  }
+}

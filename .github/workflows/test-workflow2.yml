@@ -1,0 +1,28 @@
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Repository name. Should start with `dig-cdf-flows-` and exist in the AkerBP organization'
+        required: true
+        type: string
+        default: 'dig-cdf-flows-'
+      branch:
+        description: 'Branch in `AkerBP/dig-cdf-flows-<name>` repository'
+        required: true
+        type: string
+        default: main
+      dry_run:
+        description: 'Dry run (do not create branch or pull request)'
+        required: false
+        type: boolean
+        default: false
+      debug:
+        description: 'Enable bash debugging (set -x)'
+        required: false
+        type: boolean
+        default: false
+jobs:
+  do-nothing:
+    runs-on: ubuntu-latest
+    steps:
+      - run: true

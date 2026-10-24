@@ -10,3 +10,4 @@ __marimo__
 **/.terraform/**
 *.tfstate
 *.tfstate.backup
+/node_modules/**
