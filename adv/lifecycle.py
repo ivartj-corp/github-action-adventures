@@ -7,42 +7,65 @@ import collections.abc
 from .util import msgraph
 
 
-class PropertyFact(typing.NamedTuple):
-    subject_ref: str
-    property: str
-    value: str
-
-
-class RelationFact(typing.NamedTuple):
-    subject_ref: str
-    relation_type: typing.Literal["owner_of", "member_of"]
-    object_ref: str
-
-
-Fact = RelationFact | PropertyFact
-
-
-class PartialSetSpec(typing.TypedDict):
+class PartialRefSetSpec(typing.TypedDict):
     include: list[str] | None
     exclude: list[str] | None
 
 
-SetSpec: typing.TypeAlias = list[str] | PartialSetSpec
+RefSetSpec: typing.TypeAlias = list[str] | PartialRefSetSpec
 
 
-class Group(typing.TypedDict):
+class GroupSpec(typing.TypedDict):
+    type: typing.Literal["group"]
+    id: str | None
     display_name: str
     unique_name: str | None
-    owners: SetSpec
-    members: SetSpec
+    owners: RefSetSpec | None
+    members: RefSetSpec | None
 
 
-class Application(typing.TypedDict):
+class ApplicationSpec(typing.TypedDict):
+    type: typing.Literal["application"]
+    id: str | None
     display_name: str
     unique_name: str | None
-    groups: SetSpec | None
-    owners: SetSpec | None
+    groups: RefSetSpec | None
+    owners: RefSetSpec | None
 
+
+ResourceSpec = GroupSpec | ApplicationSpec
+
+
+def resource_spec_query_needs(spec: ResourceSpec) -> collections.abc.Generator[tuple[str, str]]:
+    match spec["type"]:
+        case "application":
+            if (id := spec.get("id")) is not None:
+                id_escaped = id.replace("'", "''")
+                yield "/applications", f"id eq '{id_escaped}'"
+            if (unique_name := spec.get("unique_name")) is not None:
+                unique_name_escaped = unique_name.replace("'", "''")
+                yield "/applications", f"uniqueName eq '{unique_name_escaped}'"
+            if (ref_set_spec := spec.get("owners")) is not None:
+                yield from ref_set_query_needs(ref_set_spec)
+        case "group":
+            if (id := spec.get("id")) is not None:
+                id_escaped = id.replace("'", "''")
+                yield "/groups", f"id eq '{id_escaped}'"
+            if (unique_name := spec.get("unique_name")) is not None:
+                unique_name_escaped = unique_name.replace("'", "''")
+                yield "/applications", f"uniqueName eq '{unique_name_escaped}'"
+
+
+def ref_set_query_needs(spec: RefSetSpec) -> collections.abc.Generator[tuple[str, str]]:
+    match spec:
+        case list():
+            pass
+        case dict():
+            pass
+
+
+def ref_query(ref: str) -> tuple[str, str]:
+    
 
 class QueryAggregator[T]:
     _query_callback: typing.Callable[[str], collections.abc.AsyncIterable[T]]

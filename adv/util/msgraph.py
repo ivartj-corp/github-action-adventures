@@ -158,6 +158,10 @@ class User(typing.TypedDict):
     userPrincipalName: str
 
 
+def odata_escape(s: str) -> str:
+    s = s.replace("'", "''")
+    return f"'{s}'"
+
 def odata_type_of(resource_type: type[User | Group | Application | ServicePrincipal]) -> str:
     match resource_type:
         case x if x is User:

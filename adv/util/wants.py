@@ -70,7 +70,7 @@ class ObjectFieldWant(BaseModel):
             updated = {}
             current_field_value = None
         updated[self.field] = self.value.apply(current_field_value)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-        return updated
+        return updated  # pyright: ignore[reportUnknownVariableType]
 
     def satisfied_by(self, value: builtins.object | None) -> bool:
         if not isinstance(value, dict):
