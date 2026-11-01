@@ -1,0 +1,10 @@
+description: Annotation state for the file annotation pipeline
+externalId: FileAnnotation_SOL
+name: File annotation SOL
+space: {{ annotationStateSchemaSpace }}
+version: {{ annotationStateVersion }}
+views:
+  - externalId: {{ annotationStateExternalId }}
+    space: {{ annotationStateSchemaSpace }}
+    type: view
+    version: {{ annotationStateVersion }}

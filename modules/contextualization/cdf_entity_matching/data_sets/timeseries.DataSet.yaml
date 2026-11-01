@@ -1,0 +1,6 @@
+externalId: 'ds_entity_matching'
+name: 'ds:entity:matching'
+description: 'Entity matching data'
+metadata:
+  consoleSource: '{"names": ["entity_matching"]}'
+  rawTables: '[{"databaseName": "{{ dbName }}", "tableName": "contextualization_good"}, {"databaseName": "{{ dbName }}", "tableName": "contextualization_bad"}, {"databaseName": "{{ dbName }}", "tableName": "contextualization_manual_input"}, {"databaseName": "{{ dbName }}", "tableName": "contextualization_rule_input"}, {"databaseName": "{{ dbName }}", "tableName": "contextualization_state_store"}]'

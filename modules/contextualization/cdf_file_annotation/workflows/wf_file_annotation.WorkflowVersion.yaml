@@ -1,0 +1,87 @@
+- workflowExternalId: {{ workflowExternalId }}
+  version: v1
+  workflowDefinition:
+    description: "Submit file annotations, collect results, and link files to assets"
+    tasks:
+      - externalId: fn_prepare
+        type: function
+        parameters:
+          function:
+            externalId: {{ functionExternalId }}
+            data:
+              {
+                "stage": "prepare",
+                "ExtractionPipelineExtId": {{ extractionPipelineExternalId }},
+                "logLevel": "INFO"
+              }
+          isAsyncComplete: false
+        name: Prepare file annotations
+        retries: 1
+        timeout: 600
+        onFailure: abortWorkflow
+      - externalId: fn_launch
+        type: function
+        dependsOn:
+          - externalId: fn_prepare
+        parameters:
+          function:
+            externalId: {{ functionExternalId }}
+            data:
+              {
+                "stage": "launch",
+                "ExtractionPipelineExtId": {{ extractionPipelineExternalId }},
+                "logLevel": "INFO"
+              }
+          isAsyncComplete: false
+        name: Launch file annotations
+        retries: 1
+        timeout: 600
+        onFailure: abortWorkflow
+      - externalId: fn_finalize
+        type: function
+        dependsOn:
+          - externalId: fn_launch
+        parameters:
+          function:
+            externalId: {{ functionExternalId }}
+            data:
+              {
+                "stage": "finalize",
+                "ExtractionPipelineExtId": {{ extractionPipelineExternalId }},
+                "logLevel": "INFO"
+              }
+          isAsyncComplete: false
+        name: Finalize file annotations
+        retries: 1
+        timeout: 600
+        onFailure: abortWorkflow
+      - externalId: fn_promote
+        type: function
+        dependsOn:
+          - externalId: fn_finalize
+        parameters:
+          function:
+            externalId: {{ functionExternalId }}
+            data:
+              {
+                "stage": "promote",
+                "ExtractionPipelineExtId": {{ extractionPipelineExternalId }},
+                "logLevel": "INFO"
+              }
+          isAsyncComplete: false
+        name: Promote file annotations
+        retries: 1
+        timeout: 600
+        onFailure: abortWorkflow
+      - externalId: tr_file_to_asset
+        type: transformation
+        dependsOn:
+          - externalId: fn_promote
+        parameters:
+          transformation:
+            externalId: tr_file_to_asset_from_annotations
+            concurrencyPolicy: fail
+        name: Link files to assets
+        retries: 1
+        timeout: 1800
+        onFailure: abortWorkflow

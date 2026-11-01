@@ -1,15 +1,19 @@
 import typer
 from typing import Annotated
+import typing
+import pathlib
 import shutil
 import dataclasses
 from dataclasses import dataclass
 import subprocess
 import json
-from itertools import chain
 from .util.codeowners import CodeOwners
 from .util import config_util
 import yaml
 import re
+import pydantic
+import fnmatch
+
 
 app = typer.Typer()
 
@@ -175,6 +179,111 @@ def config_diff(
         if terminator in key_path:
             raise Exception(f'terminator exists in path {key_path}')
         print(key_path, end=terminator)
+
+
+@app.command()
+def tk_build_check(
+        build_dir: typing.Annotated[
+            pathlib.Path | None,
+            typer.Option(
+                help="Directory containing resources built with Cognite Toolkit",
+            )
+        ] = None,
+        module_authorization_file: typing.Annotated[
+            pathlib.Path | None,
+            typer.Option(
+                help="File specifying which modules are allowed to deploy which types of resources",
+            )
+        ] = None,
+) -> None:
+    if build_dir is None:
+        build_dir = pathlib.Path("./build")
+    if module_authorization_file is None:
+        module_authorization_file = pathlib.Path("./module_authorization.yaml")
+
+    build_lineage_object: object = yaml.safe_load((build_dir / "lineage.yaml").read_text())  # pyright: ignore[reportAny]
+    class BuildLineage(pydantic.BaseModel):
+        moduleLineage: list["ModuleLineage"]
+    class ModuleLineage(pydantic.BaseModel):
+        moduleId: str
+        resourceLineage: list["ResourceLineage"]
+    class ResourceType(pydantic.BaseModel):
+        resource_folder: str
+        kind: str
+    class ResourceLineage(pydantic.BaseModel):
+        sourceFile: str
+        builtFile: str
+        type: ResourceType
+        identifier: dict[str, str]
+    build_lineage = BuildLineage.model_validate(build_lineage_object)
+
+    module_authorization_object: object = yaml.safe_load(module_authorization_file.read_text())  # pyright: ignore[reportAny]
+    class ModuleAuthorization(pydantic.BaseModel):
+        type: dict[typing.Literal["resource_folder", "kind"], str]
+        identifier: dict[str, str]
+        wildcard: bool = False
+    prefix2authorizations = pydantic.TypeAdapter(dict[str, list[ModuleAuthorization]]).validate_python(module_authorization_object)
+
+    for module_lineage in build_lineage.moduleLineage:
+        module_id = module_lineage.moduleId
+        implicit_authorizations: list[ModuleAuthorization] = []
+        for resource_lineage in module_lineage.resourceLineage:
+            type = resource_lineage.type
+            match type.resource_folder, type.kind:
+                case "raw", "Database":
+                    for db_name_key in "dbName", "name":
+                        implicit_authorizations.append(
+                            ModuleAuthorization(
+                                type={"resource_folder": "raw"},
+                                identifier={
+                                    db_name_key: resource_lineage.identifier["name"]
+                                },
+                                wildcard=True
+                            )
+                        )
+                case "data_modeling", "Space":
+                    implicit_authorizations.append(
+                        ModuleAuthorization(
+                            type={"resource_folder": "data_modeling"},
+                            identifier={
+                                "space": resource_lineage.identifier["space"]
+                            },
+                            wildcard=True
+                        )
+                    )
+                case _, _:
+                    pass
+        authorizations: list[ModuleAuthorization] = [
+            authorization
+            for prefix, authorizations in prefix2authorizations.items()
+            if module_id.startswith(prefix)
+            for authorization in authorizations
+        ] + implicit_authorizations
+        for resource_lineage in module_lineage.resourceLineage:
+            authorized_resource = False
+            for authorization in authorizations:
+                if not authorization.wildcard and frozenset(authorization.type.keys()) != frozenset(resource_lineage.type.model_dump().keys()):
+                    continue
+                for type_key, auth_type_value in authorization.type.items():
+                    resource_type_value: str = getattr(resource_lineage.type, type_key)  # pyright: ignore[reportAny]
+                    if authorization.wildcard and not fnmatch.fnmatchcase(resource_type_value, auth_type_value):
+                        continue
+                    elif resource_type_value != auth_type_value:
+                        continue
+                if not authorization.wildcard and frozenset(authorization.identifier.keys()) != frozenset(resource_lineage.identifier.keys()):
+                    continue
+                for id_key, auth_id_value in authorization.identifier.items():
+                    resource_id_value = resource_lineage.identifier.get(id_key)
+                    if resource_id_value is None:
+                        continue
+                    elif authorization.wildcard and not fnmatch.fnmatchcase(resource_id_value, auth_id_value):
+                        continue
+                    elif resource_id_value != auth_id_value:
+                        continue
+                authorized_resource = True
+                break
+            if not authorized_resource:
+                raise Exception(f"module {module_id} is not authorized to deploy {resource_lineage}")
 
 if __name__ == "__main__":
     app()

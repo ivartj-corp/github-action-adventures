@@ -1,0 +1,33 @@
+name: ctx:file:annotation
+externalId: {{ extractionPipelineExternalId }}
+dataSetExternalId: {{ annotationDatasetExternalId }}
+description: "Pipeline holding configuration and run history for file annotation."
+# Fixed names, defined in functions/fn_file_annotation/fa_constants.py.
+rawTables:
+  - dbName: raw_file_annotation
+    tableName: annotation_documents_tags
+  - dbName: raw_file_annotation
+    tableName: annotation_documents_docs
+  - dbName: raw_file_annotation
+    tableName: annotation_documents_patterns
+  - dbName: raw_file_annotation
+    tableName: annotation_entities_cache
+  - dbName: raw_file_annotation
+    tableName: manual_patterns_catalog
+  - dbName: raw_file_annotation
+    tableName: annotation_tags_cache
+  - dbName: raw_file_annotation
+    tableName: annotation_file_status_report
+source: "Files"
+documentation: >
+  ## File annotation
+
+  The `fn_file_annotation` function runs four stages selected by its input `stage`:
+  prepare, launch, finalize, and promote. One workflow runs those stages in order and
+  then runs the file-to-asset transformation.
+
+  The extraction-pipeline config uses `parameters` for operator choices and `data` for
+  view identities and matching properties. RAW database and table names, fixed limits,
+  tags, state filters, and promote cleanup behavior are constants in the function code.
+
+  See `detailed_guides/CONFIG.md` in the deployment pack for the complete contract.

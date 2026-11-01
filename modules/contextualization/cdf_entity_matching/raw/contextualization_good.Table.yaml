@@ -1,0 +1,2 @@
+dbName: {{ dbName }}
+tableName: contextualization_good

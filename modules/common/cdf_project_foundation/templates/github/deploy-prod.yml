@@ -1,0 +1,73 @@
+name: Toolkit Deploy Prod
+
+on:
+  release:
+    types:
+      - published
+
+concurrency:
+  group: toolkit-deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The Toolkit image has no git, so the release checks run here, on the plain runner, with no
+  # environment or secrets.
+  verify-release:
+    name: Verify release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce release tag pattern and reachability from main
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag must match vX.Y.Z (got: $TAG)"
+            exit 1
+          fi
+          STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...main" --jq .status)
+          if [ "$STATUS" != "ahead" ] && [ "$STATUS" != "identical" ]; then
+            echo "::error::Production releases must be published from a commit reachable from main"
+            exit 1
+          fi
+
+  deploy:
+    name: Deploy to {{PROD_PROJECT}}
+    needs: verify-release
+    runs-on: ubuntu-latest
+    environment: prod-toolkit-credentials
+    container:
+      image: {{TOOLKIT_IMAGE}}
+    env:
+      CDF_CLUSTER: ${{ vars.CDF_CLUSTER }}
+      CDF_PROJECT: ${{ vars.CDF_PROJECT }}
+      LOGIN_FLOW: ${{ vars.LOGIN_FLOW }}
+      PROVIDER: ${{ vars.PROVIDER || 'entra_id' }}
+      IDP_TENANT_ID: ${{ vars.IDP_TENANT_ID }}
+      IDP_CLIENT_ID: ${{ vars.IDP_CLIENT_ID }}
+      ADMIN_SOURCE_ID: ${{ vars.ADMIN_SOURCE_ID }}
+      CONSUMER_SOURCE_ID: ${{ vars.CONSUMER_SOURCE_ID }}
+      PRODUCER_SOURCE_ID: ${{ vars.PRODUCER_SOURCE_ID }}
+      IDP_CLIENT_SECRET: ${{ secrets.IDP_CLIENT_SECRET }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Remove local .env
+        run: rm -f .env
+
+      - name: Verify project config is in sync
+        run: {{SETUP_PROJECT_CHECK_CMD}}
+
+      - name: cdf build
+        run: cdf build {{PROD_BUILD_ARGS}}
+
+      - name: cdf deploy --dry-run
+        run: cdf deploy --dry-run
+
+      - name: cdf deploy
+        run: cdf deploy

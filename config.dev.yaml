@@ -1,0 +1,349 @@
+environment:
+  name: dev
+  project: <my-project-dev>
+  validation-type: dev
+  selected:
+  - modules/
+
+variables:
+  modules:
+    common:
+      cdf_ingestion:
+        workflow: ingestion
+        dataset: ingestion
+        # Update GROUP_SOURCE_ID to your group source ID
+        groupSourceId: ${GROUP_SOURCE_ID}
+        # Update INGESTION_CLIENT_ID and INGESTION_CLIENT_SECRET to your ingestion client ID and secret
+        ingestionClientId: ${IDP_CLIENT_ID}
+        ingestionClientSecret: ${IDP_CLIENT_SECRET}
+        rawDatabase: cfihos_oil_and_gas
+        schemaSpace: dm_dom_oil_and_gas
+        schemaSpace2: cdf_cdm
+        schemaSpace3: cdf_idm
+        schemaSpace4: dm_sol_oil_and_gas_search
+        instanceSpaces:
+        - inst_cfihos_oil_and_gas
+        - cdf_cdm_units
+        runWorkflowSchedule: 0 0 29 2 *
+        # Transformation externalId variables. Each CFIHOS wave task in v1.WorkflowVersion.yaml
+        # invokes exactly one of these — no transformation is referenced by more than one task.
+        timeseriesTransformationExternalId: tr_timeseries_all_to_timeseries_data
+        assetTransformationExternalId: tr_tag_all_to_tag
+        equipmentTransformationExternalId: tr_equipment_all_to_equipment
+        equipmentToAssetTransformationExternalId: tr_tag_all_to_tag_common_lci_properties_connection
+        maintenanceOrderTransformationExternalId: tr_work_order_all_to_work_order
+        operationTransformationExternalId: tr_work_order_operation_all_to_work_order_operation
+        operationToMaintenanceOrderTransformationExternalId: tr_work_order_operation_all_to_work_order_operation_connection
+        fileTransformationExternalId: tr_file_all_to_file
+        maintenanceOrderToAssetTransformationExternalId: tr_work_order_all_to_work_order_assets_backfill
+        operationToAssetTransformationExternalId: tr_work_order_operation_all_to_work_order_operation_assets_backfill
+        activityToTimeSeriesTransformationExternalId: tr_work_order_operation_all_to_work_order_operation_timeseries_connection
+        functionalLocationTransformationExternalId: tr_functional_location_all_to_functional_location
+        functionalLocationNodeTransformationExternalId: tr_functional_location_all_to_functional_location_node
+        maintenanceIntegrityTransformationExternalId: tr_maintenance_integrity_all_to_maintenance_integrity
+        compressorTransformationExternalId: tr_compressor_all_to_compressor
+        valveTransformationExternalId: tr_valve_all_to_valve
+        pumpTransformationExternalId: tr_pump_all_to_pump
+        turbineTransformationExternalId: tr_turbine_all_to_turbine
+        heatExchangerTransformationExternalId: tr_heat_exchanger_all_to_heat_exchanger
+        pipingPipelineTransformationExternalId: tr_piping_pipeline_all_to_piping_pipeline_equipment
+        instrumentEquipmentTransformationExternalId: tr_instrument_equipment_all_to_instrument_equipment
+        electricalEquipmentTransformationExternalId: tr_electrical_equipment_all_to_electrical_equipment_class
+        mechanicalEquipmentTransformationExternalId: tr_mechanical_equipment_all_to_mechanical_equipment_class
+        drillingEquipmentTransformationExternalId: tr_drilling_equipment_all_to_drilling_equipment
+        enclosureTransformationExternalId: tr_enclosure_all_to_enclosure
+        hseEquipmentTransformationExternalId: tr_hse_equipment_all_to_hse_equipment_class
+        infrastructureTransformationExternalId: tr_infrastructure_all_to_infrastructure
+        itTelecomEquipmentTransformationExternalId: tr_it_telecom_equipment_all_to_it_telecom_equipment
+        miscellaneousEquipmentTransformationExternalId: tr_miscellaneous_equipment_all_to_miscellaneous_equipment
+        subseaEquipmentTransformationExternalId: tr_subsea_equipment_all_to_subsea_equipment_class
+        toolTransformationExternalId: tr_tool_all_to_tool
+        diagramAnnotationTransformationExternalId: tr_diagram_annotation_all_to_cognite_diagram_annotation
+        fileTagConnectionTransformationExternalId: tr_diagram_annotation_all_to_file_tag_connection
+        fileEquipmentConnectionTransformationExternalId: tr_diagram_annotation_all_to_file_equipment_connection
+        failureModeTransformationExternalId: tr_failure_mode_all_to_failure_mode
+        timeseriesEquipmentConnectionTransformationExternalId: tr_timeseries_all_to_timeseries_equipment_connection
+        tagFunctionalLocationPropertiesConnectionTransformationExternalId: tr_tag_all_to_tag_functional_location_properties_connection
+        tagClassSpecificConnectionTransformationExternalId: tr_tag_all_to_tag_class_specific_connection
+        tagAdditionalPropertiesTransformationExternalId: tr_tag_all_to_tag_additional_properties
+        workOrderTimeseriesConnectionTransformationExternalId: tr_work_order_all_to_work_order_timeseries_connection
+        notificationTransformationExternalId: tr_notification_all_to_notification
+        notificationWorkOrderConnectionTransformationExternalId: tr_notification_all_to_notification_work_order_connection
+        notificationFailureModeConnectionTransformationExternalId: tr_notification_all_to_notification_failure_mode_connection
+
+      cdf_project_foundation:
+        # Optional site segment for access-group names (e.g. "oslo"). Leave blank to omit.
+        site: ''
+        # Dataset used to scope the foundation access group ACLs.
+        # Must match the dataset used by the source system modules.
+        dataset: []
+        # Computed by scripts/setup_project.py per environment as <persona>[-<site>]-<env>
+        # where env is "dev" (covers dev + test) or "prod". These defaults are the
+        # no-site dev values; setup_project.py overrides them in each config.<env>.yaml.
+        consumerGroupName: consumer_all_dev
+        producerGroupName: producer_all_dev
+        adminGroupName: admin_all_dev
+        # Object ID of the Entra ID security group mapped to each persona (SOP Step 3d).
+        # Values are stored in .env by setup_project.py and referenced here via ${…}.
+        # Run the wizard to populate .env, or set the variables manually.
+        consumerSourceId: ${CONSUMER_SOURCE_ID} # read-only consumers
+        producerSourceId: ${PRODUCER_SOURCE_ID} # read/write ingestion producers
+        adminSourceId: ${ADMIN_SOURCE_ID} # foundation administrators
+        # Schema space where the selected data model views are defined.
+        schemaSpace: cdf_cdm
+        # Space where DM instances are written (project-level).
+        instanceSpace: sp_cdm_instances
+        # All DM spaces the consumer group needs read access to: project-level space +
+        # one per installed extractor module. Computed by setup_project.py.
+        instanceSpaces:
+        - sp_cdm_instances
+        # Additional schema spaces the producer persona reads from, in addition to
+        # schemaSpace. Default (this file, and the "cdm" variant) is CDM-only.
+        # setup_project.py extends this per variant with that variant's own search-solution
+        # space — e.g. cfihos_oil_and_gas_extension adds dm_sol_oil_and_gas_search,
+        # isa_manufacturing_extension adds dm_sol_isa_manufacturing_search.
+        additionalSchemaSpaces:
+        - cdf_cdm
+        - cdf_idm
+        - cdf_cdm_units
+        # Supported: cdm | isa_manufacturing_extension | cfihos_oil_and_gas_extension
+        dataModelVariant: cdm
+
+    contextualization:
+      cdf_entity_matching:
+        function_version: v1.0.0
+        # Team or person that owns the functions, shown in CDF
+        functionOwner: cdf_entity_matching
+        dbName: db_asset_entity_matching
+        contextualizationId: entity_matcher
+        contextualizationName: Entity Matcher
+        # Matching views: CogniteAsset and CogniteTimeSeries in cdf_cdm. Point these at your
+        # enterprise views when you do not match against CDM directly.
+        schemaSpace: cdf_cdm
+        viewVersion: v1
+        assetInstanceSpace: inst_location
+        timeseriesInstanceSpace: inst_location
+        fileInstanceSpace: inst_location
+        functionSpace: sp_entity_matching_fn # space where function code nodes are stored — created by this module
+        # Used only after testing/apply_scoped_matching.py copies the test-only scope model
+        # into this module. Harmless when those files are not present.
+        scopeSchemaSpace: sp_entity_matching_scope
+        scopeDmVersion: v1
+        scopeDataModelExternalId: EntityMatchingScope_SOL
+        assetViewExternalId: CogniteAsset
+        timeseriesViewExternalId: CogniteTimeSeries
+        # Files stay on CDM; aliases update uses fileSchemaSpace so it is not tied to asset/ts views.
+        fileSchemaSpace: cdf_cdm
+        fileViewExternalId: CogniteFile
+        targetViewExternalId: CogniteAsset
+        entityViewExternalId: CogniteTimeSeries
+        targetViewSearchProperty: aliases
+        # NOTE: in CFIHOS example data model (dm_dom_oil_and_gas.DataModel.yaml) it is labels
+        viewFilterProperty: tags
+        # patterns match one name: 'all' for one alias per matching pattern, or 'longest' for
+        # only the longest - the most specific reading of the name.
+        timeseriesAliasPattern:
+        - ([0-9]{2}[-_.:][A-Z]{2,4}[-_.:][0-9]{4,5}[A-Z][-_][A-Z]{1,3})
+        - ([0-9]{2}[-_.:][A-Z]{2,4}[-_.:][0-9]{4,5}[-_][A-Z]{1,3})
+        - ([0-9]{2}[-_.:][A-Z]{2,4}[-_.:][0-9]{4,5})
+        timeseriesAliasSelection: longest
+        assetAliasPattern:
+        - ([A-Z]{2,4}[-_.:][0-9]{4,5})
+        - ([0-9]{2}[-_.:][A-Z]{2,4}[-_.:][0-9]{4,5}[A-Z][-_][A-Z]{1,3})
+        - ([0-9]{2}[-_.:][A-Z]{2,4}[-_.:][0-9]{4,5}[-_][A-Z]{1,3})
+        - ([0-9]{2}[-_.:][A-Z]{2,4}[-_.:][0-9]{4,5})
+        assetAliasSelection: all
+        # Files also get their file name without the extension as an alias, but only when a
+        # pattern also matches. A name that matches no pattern produces no alias.
+        # Separators in a captured group are rewritten to "_", same as equipment tags.
+        # PH-25578-P-4110006-001.pdf gives PH_25578_P_4110006_001 (from the first
+        # pattern, and from the file name) and PH_25578_P_4110006 (from the second, whose sheet
+        # number is outside the group and optional, so the shortened alias is still recognized as
+        # generated later). (?<![A-Z]) stops a longer prefix matching from its second letter,
+        # which would write a truncated alias. Keep "_" among the separators so updateAll still
+        # recognises aliases this function wrote.
+        fileAliasPattern:
+        - (?<![A-Z])([A-Z]{2,4}[-_][A-Z0-9]+[-_][A-Z][-_][0-9]+[-_][0-9]+)
+        - (?<![A-Z])([A-Z]{2,4}[-_][A-Z0-9]+[-_][A-Z][-_][0-9]+)(?=[-_][0-9]+)
+        # Keep 'all' here: the document patterns above are written to give both the number with
+        # and without its sheet number, and 'longest' would discard the shorter one
+        fileAliasSelection: all
+        fileViewFilterValues: []
+        targetViewFilterValues: []
+        entityViewSearchProperty: aliases
+        entityViewFilterValues: []
+        # Optional scope for the submit/collect matcher (fn_dm_context_entity_matching): entities are
+        # only matched to targets with the same primary (and secondary, when set). Targets tagged
+        # 'ScopeWideDetect' join every secondary of their primary. Entities with no scope value
+        # are matched against all targets. Both properties must exist on entity and target views.
+        # Leave empty to match unscoped.
+        primaryScopeProperty: ''
+        secondaryScopeProperty: ''
+        workflow: wf_ctx_entity_matching
+        # Cron schedule for the workflow. The default only fires on 29 February, which leaves runs
+        # to be started by hand; set e.g. '0 2 * * *' for a nightly run.
+        workflowSchedule: 0 0 29 2 *
+        # 
+        workflowClientId: ${IDP_CLIENT_ID}
+        workflowClientSecret: ${IDP_CLIENT_SECRET}
+        # Update GROUP_SOURCE_ID to your group source ID
+        entity_matching_processing_group_source_id: ${GROUP_SOURCE_ID}
+
+      cdf_file_annotation:
+        # used in /data_sets, /data_models, /functions, /extraction_pipelines, and /workflows
+        annotationDatasetExternalId: ds_file_annotation
+        # Deployment environment, used in the group name producer_pp_file_annotation_<environment>
+        environment: dev
+        ApplicationOwner: <APPLICATION_OWNER> # Update to your application owner email id(s)
+        # used in /data_models and /extraction_pipelines
+        annotationStateExternalId: FileAnnotationState
+        annotationStateSchemaSpace: dm_file_annotation
+        annotationStateVersion: v1.0.0
+        patternModeInstanceSpace: inst_file_annotation_pattern_results
+        patternDetectSink: pattern_detection_sink_node
+        fileSchemaSpace: cdf_cdm
+        fileInstanceSpace: sp_cdm_instances
+        fileExternalId: CogniteFile
+        fileVersion: v1
+        fileSearchProperty: aliases
+        fileResourceProperty: ''
+        targetEntitySchemaSpace: cdf_cdm
+        targetEntityInstanceSpace: sp_cdm_instances
+        targetEntityExternalId: CogniteAsset
+        targetEntityVersion: v1
+        targetEntitySearchProperty: aliases
+        targetEntityResourceProperty: ''
+        # Used only after local_setup/apply_scoped_matching.py copies the test-only scope model
+        # into this module. Harmless when those files are not present.
+        scopeSchemaSpace: sp_file_annotation_scope
+        scopeDmVersion: v1
+        scopeDataModelExternalId: FileAnnotationScope_SOL
+        # used in /extraction_pipelines
+        extractionPipelineExternalId: ep_ctx_file_annotation
+        patternMode: true
+        structuralAutoPatterns: false
+        # When true, Promote matches a pattern tag only against entities that share the
+        # annotated file's primaryScopeProperty / secondaryScopeProperty values.
+        # Ignored when both scope properties are empty. Default false keeps the previous
+        # whole-space lookup. See README "Scoping by site".
+        filterPatternPromoteByScope: false
+        cleanOldAnnotations: false
+        # Regular-detect thresholds. assetAuto* apply to asset links (diagrams.AssetLink);
+        # fileAuto* apply to file links (diagrams.FileLink).
+        assetAutoApprovalThreshold: 0.85
+        assetAutoSuggestThreshold: 0.7
+        fileAutoApprovalThreshold: 0.5
+        fileAutoSuggestThreshold: 0.3
+        # secondaryScopeProperty: unit
+        primaryScopeProperty: ''
+        secondaryScopeProperty: ''
+        # Pipeline tags: ToAnnotate, DetectInDiagrams, ScopeWideDetect, AnnotationInProcess,
+        # Annotated, AnnotationFailed, PromoteAttempted, PromotedAuto, AmbiguousMatch.
+        # Prepare IN filter. Add Annotated / AnnotationFailed here to reprocess those files
+        # (they are then dropped from the exclude list automatically).
+        filesToAnnotateTags:
+        - ToAnnotate
+        # Prepare NOT IN filter. Keep AnnotationInProcess unless you intend to pick up in-flight files.
+        filesToAnnotateExcludeTags:
+        - AnnotationInProcess
+        - Annotated
+        - AnnotationFailed
+        # Launch: files used as diagram-detect match entities (IN).
+        fileEntitiesTags:
+        - DetectInDiagrams
+        # Launch: assets used as diagram-detect match entities (IN).
+        targetEntitiesTags:
+        - DetectInDiagrams
+        # Debugging: externalId of one file (in fileInstanceSpace) to run through all stages.
+        # Other files are neither retrieved nor processed, and the file's tags are ignored
+        # (it is re-annotated even if already Annotated). Leave empty for normal runs.
+        debugFileExternalId: ''
+        # fileNormalizationPatterns: []
+        entityNormalizationPatterns:
+        - ([A-Z]{2,4}[-_.:][0-9]{4,5})
+        - ([0-9]{2}[-_.:][A-Z]{2,4}[-_.:][0-9]{4,5}[A-Z][-_][A-Z]{1,3})
+        - ([0-9]{2}[-_.:][A-Z]{2,4}[-_.:][0-9]{4,5}[-_][A-Z]{1,3})
+        - ([0-9]{2}[-_.:][A-Z]{2,4}[-_.:][0-9]{4,5})
+        fileNormalizationPatterns:
+        - (?<![A-Z])([A-Z]{2,4}[-_][A-Z0-9]+[-_][A-Z][-_][0-9]+[-_][0-9]+)
+        - (?<![A-Z])([A-Z]{2,4}[-_][A-Z0-9]+[-_][A-Z][-_][0-9]+)(?=[-_][0-9]+)
+        # used in /functions
+        functionClientId: ${IDP_CLIENT_ID}
+        functionClientSecret: ${IDP_CLIENT_SECRET}
+        functionSpace: inst_file_annotation_function # space where function code nodes are stored — created by this module
+        functionExternalId: fn_file_annotation
+        functionVersion: v1.0.0
+        # used in /workflows
+        workflowExternalId: wf_ctx_file_annotation
+        # 00:00 on 29 February, so the workflow only runs on its own in leap years.
+        # Paste a daily cron when annotation should start unattended, for example "0 0 * * *".
+        workflowSchedule: 0 0 29 2 *
+        # used in /auth
+        # Update GROUP_SOURCE_ID to your group source ID
+        groupSourceId: ${GROUP_SOURCE_ID}
+
+    datamodels:
+      cfihos_oil_and_gas_extension:
+        # Dataset configuration
+        dataset_external_id: ds_oil_and_gas_domain_model # CDF dataset external ID for all resources in this module
+        dataset_name: Oil and Gas Domain Model # Display name for the dataset in CDF
+        write_protected: false # Whether the dataset is write-protected
+        governed: false # Whether the dataset is governed (access control via data policies)
+        # Access control / group configuration
+        admin_user: admin.user@firm.com # Admin user email used in owner and read groups
+        integrationOwnerEmail: integration.owner@firm.com # Email of the integration owner (used in dataset metadata)
+        integrationOwnerName: Integration Owner # Name of the integration owner (used in dataset metadata)
+        owner_source_id: ${OWNER_GROUP_SOURCE_ID} # Source ID for the owner security group
+        read_source_id: ${READ_GROUP_SOURCE_ID} # Source ID for the read security group
+        # Data modeling spaces
+        space: dm_dom_oil_and_gas # Primary space for all containers, views, and data model definitions
+        instance_space: inst_cfihos_oil_and_gas
+        search_space: dm_sol_oil_and_gas_search # Space where node/edge instances are stored (shared with the search solution module)
+        # Data model versioning (enterprise model only — search has its own search_dm_version)
+        dm_version: v1
+        # Data model identifiers
+        data_model_external_id: dm_oil_and_gas_domain_model # External ID for the domain data model
+        data_model_name: Oil and Gas Domain Model # Display name for the domain data model
+        # Workflow versioning
+        workflow_version: v1 # Version of the data workflow definition
+
+      cfihos_oil_and_gas_extension_search:
+        # Versioning policy: bump `search_dm_version` here independently of the
+        # enterprise `dm_version`. See `cdf-enterprise-vs-solution.md` §9.
+        # Enterprise module references (read-only from this solution's perspective)
+        enterprise_space: dm_dom_oil_and_gas # Space owning the enterprise containers
+        enterprise_dm_version: v1 # Enterprise view version (used only for direct-relation source views in CDM/IDM)
+        # Search solution spaces
+        search_space: dm_sol_oil_and_gas_search # Space for the search solution model and its Search* views
+        instance_space: inst_cfihos_oil_and_gas # Shared instance space (must match enterprise instance_space)
+        # Search solution data model
+        search_dm_version: v1
+        search_data_model_external_id: dm_oil_and_gas_domain_model_search
+        search_data_model_name: Oil and Gas Domain Model Search
+
+    sourcesystem:
+      cdf_pi_data_dump:
+        space: dm_dom_oil_and_gas
+        instance_space: inst_cfihos_oil_and_gas
+        dm_version: v1
+        data_model_external_id: dm_oil_and_gas_domain_model
+        dataset_external_id: ds_oil_and_gas_domain_model
+
+      cdf_sap_data_dump:
+        space: dm_dom_oil_and_gas
+        instance_space: inst_cfihos_oil_and_gas
+        dm_version: v1
+        data_model_external_id: dm_oil_and_gas_domain_model
+        dataset_external_id: ds_oil_and_gas_domain_model
+
+      cdf_sharepoint_data_dump:
+        space: dm_dom_oil_and_gas
+        instance_space: inst_cfihos_oil_and_gas
+        dm_version: v1
+        data_model_external_id: dm_oil_and_gas_domain_model
+        dataset_external_id: ds_oil_and_gas_domain_model
+        workflow_external_id: wf_diagram_annotation
+        workflow_version: v1
+        run_workflow_schedule: 0 0 29 2 *
+        client_id: ${IDP_CLIENT_ID}
+        client_secret: ${IDP_CLIENT_SECRET}

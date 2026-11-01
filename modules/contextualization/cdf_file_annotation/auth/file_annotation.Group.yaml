@@ -1,0 +1,104 @@
+name: producer_pp_file_annotation_{{ environment }}
+sourceId: {{ groupSourceId }}
+metadata:
+  origin: cdf-project-templates
+capabilities:
+  - projectsAcl:
+      actions:
+        - READ
+        - LIST
+      scope:
+        all: {}
+  - groupsAcl:
+      actions:
+        - LIST
+      scope:
+        all: {}
+  - sessionsAcl:
+      actions:
+        - CREATE
+      scope:
+        all: {}
+  - functionsAcl:
+      actions:
+          - READ
+          - WRITE
+      scope:
+          all: {}
+  - rawAcl:
+      actions:
+        - READ
+        - WRITE
+        - LIST
+      scope:
+        tableScope:
+          dbsToTables:
+            raw_file_annotation: []
+  - dataModelInstancesAcl:
+      actions:
+        - READ
+        - WRITE
+        - WRITE_PROPERTIES
+      scope:
+        all: {}
+  - dataModelsAcl:
+      actions:
+        - READ
+      scope:
+        all: {}
+  # Launch caches the match entities in a JSON file in the annotation data set
+  - filesAcl:
+      actions:
+        - READ
+        - WRITE
+      scope:
+        datasetScope:
+          ids:
+            - {{ annotationDatasetExternalId }}
+  - entitymatchingAcl:
+      actions:
+        - READ
+        - WRITE
+      scope:
+        all: {}
+  - extractionConfigsAcl:
+      actions:
+          - READ
+      scope:
+        datasetScope:
+          ids:
+            - {{ annotationDatasetExternalId }}
+  - extractionRunsAcl:
+      actions:
+          - READ
+          - WRITE
+      scope:
+        datasetScope:
+          ids:
+            - {{ annotationDatasetExternalId }}
+  - extractionPipelinesAcl:
+        actions:
+          - READ
+          - WRITE
+        scope:
+          datasetScope:
+            ids:
+              - {{ annotationDatasetExternalId }}
+  - workflowOrchestrationAcl:
+        actions:
+            - READ
+            - WRITE
+        scope:
+          datasetScope:
+            ids:
+              - {{ annotationDatasetExternalId }}
+  # The workflow runs its transformation tasks with this group's credentials
+  - transformationsAcl:
+      actions:
+        - READ
+        - WRITE
+      scope:
+        datasetScope:
+          ids:
+            - {{ annotationDatasetExternalId }}
+# If diagram detect fails with 403 on some projects, add assetsAcl READ (scope all).

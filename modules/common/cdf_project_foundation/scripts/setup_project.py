@@ -1,0 +1,2304 @@
+"""
+Interactive setup wizard for the dp:foundation deployment pack.
+
+Aligned with the project-setup SOP. Creates and synchronises the per-environment
+Toolkit config files for the selected environments and keeps their data-model-driven
+variables and persona access-group names consistent.
+
+Secrets are NEVER written to config files.  Group ``sourceId`` values are Entra
+ID object IDs stored only in ``.env`` and referenced via ``${ENV_VAR}`` in YAML.
+
+Idempotent: a timestamped ``.bak`` of every existing config file is written
+before it is modified.  Existing comments and blank lines are preserved when
+updating a file in-place (``_yaml_patch`` helpers).
+
+Usage:
+    python setup_project.py [-y] [--check] [--variant VARIANT]
+"""
+
+import argparse
+import csv
+import os
+import re
+import shutil
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from _env_io import parse_env_file
+from _i18n import locale_override, t
+from _pack_config import (
+    CONTEXTUALIZATION_REDUNDANT_AUTH,
+    DEMO_SOURCE_SYSTEM_MODULE_DIRS,
+    REPO_ROOT,
+    TOOLS_REDUNDANT_AUTH,
+    deep_merge,
+    detect_data_model_variant,
+    detect_pack_kind,
+    find_env_configs,
+    get_contextualization_dir,
+    get_data_models_dir,
+    get_org_dir_name,
+    get_pack_root,
+    get_sourcesystem_dir,
+    list_installed_contextualization_modules,
+    list_installed_demo_source_system_modules,
+    list_installed_source_system_modules,
+    load_yaml,
+)
+from _prompts import prompt, prompt_choice, prompt_env_var, prompt_yes_no
+from _style import _banner, _hint, _ok, _section, _warn
+from _yaml_patch import delete_key as _yaml_delete_key
+from _yaml_patch import find_line as _yaml_find_line
+from _yaml_patch import get_value as _yaml_get_value
+from _yaml_patch import insert_key as _yaml_insert_key
+from _yaml_patch import set_value as _yaml_set_value
+
+# ── Environment / persona constants ───────────────────────────────────────────
+
+ENVIRONMENTS: tuple[str, ...] = ("dev", "test", "prod")
+
+# Access-group environment suffix: "dev" covers both dev and test environments.
+GROUP_ENV: dict[str, str] = {"dev": "dev", "test": "dev", "prod": "prod"}
+
+ENVIRONMENT_VALIDATION_TYPE: dict[str, str] = {"dev": "dev", "test": "prod", "prod": "prod"}
+
+PERSONAS: tuple[str, ...] = ("consumer", "producer", "admin")
+
+# ── Data-model-driven variable maps (per variant) ─────────────────────────────
+
+INGESTION_FOUNDATION_VARIABLES: dict[str, dict[str, str]] = {
+    "cdm": {
+        "dataModelVariant": "cdm",
+        "schemaSpace": "cdf_cdm",
+        "instanceSpace": "sp_cdm_instances",
+    },
+    "isa_manufacturing_extension": {
+        "dataModelVariant": "isa_manufacturing_extension",
+        "schemaSpace": "dm_dom_isa_manufacturing",
+        "instanceSpace": "inst_isa_manufacturing",
+    },
+    "cfihos_oil_and_gas_extension": {
+        "dataModelVariant": "cfihos_oil_and_gas_extension",
+        "schemaSpace": "dm_dom_oil_and_gas",
+        "instanceSpace": "inst_cfihos_oil_and_gas",
+    },
+}
+
+# Producer dataModelsAcl read spaces: base CDM/IDM/units; variant search space appended below.
+BASE_ADDITIONAL_SCHEMA_SPACES: list[str] = ["cdf_cdm", "cdf_idm", "cdf_cdm_units"]
+
+# Per-variant search-solution schema space appended to the base list above.
+# None for "cdm" — the base Cognite Data Model has no separate search solution module.
+VARIANT_SEARCH_SCHEMA_SPACE: dict[str, str | None] = {
+    "cdm": None,
+    "isa_manufacturing_extension": "dm_sol_isa_manufacturing_search",
+    "cfihos_oil_and_gas_extension": "dm_sol_oil_and_gas_search",
+}
+
+
+def additional_schema_spaces_for_variant(variant: str) -> list[str]:
+    """Producer's dataModelsAcl read-only space list for the given variant."""
+    if variant not in VARIANT_SEARCH_SCHEMA_SPACE:
+        raise ValueError(f"Unknown data model variant: {variant}")
+    spaces = list(BASE_ADDITIONAL_SCHEMA_SPACES)
+    extra = VARIANT_SEARCH_SCHEMA_SPACE[variant]
+    if extra:
+        spaces.append(extra)
+    return spaces
+
+
+VARIANT_DATA_MODEL_DATASET: dict[str, str | None] = {
+    "cdm": None,
+    "isa_manufacturing_extension": "ds_isa_manufacturing",
+    "cfihos_oil_and_gas_extension": "ds_oil_and_gas_domain_model",
+}
+
+
+def datasets_for_variant(variant: str, datasets: list[str] | None) -> list[str]:
+    """Merge the variant's own DM-extension dataset into the persona-group dataset
+    list, alongside whatever source-system-module datasets were already collected.
+    Order-preserving, de-duplicated."""
+    if variant not in VARIANT_DATA_MODEL_DATASET:
+        raise ValueError(f"Unknown data model variant: {variant}")
+    result = list(datasets) if datasets else []
+    extra = VARIANT_DATA_MODEL_DATASET.get(variant)
+    if extra and extra not in result:
+        result.append(extra)
+    return result
+
+
+# Per-variant overrides for contextualization modules.
+# ``None`` values are sentinels resolved to the variant's ``instanceSpace``
+# at runtime by ``resolve_contextualization_variables``.
+CONTEXTUALIZATION_VARIABLES: dict[str, dict[str, dict]] = {
+    "cdm": {
+        "cdf_entity_matching": {
+            "schemaSpace": "cdf_cdm",
+            "assetInstanceSpace": None,
+            "timeseriesInstanceSpace": None,
+            "fileInstanceSpace": None,
+            "assetViewExternalId": "CogniteAsset",
+            "timeseriesViewExternalId": "CogniteTimeSeries",
+            "fileViewExternalId": "CogniteFile",
+            "targetViewExternalId": "CogniteAsset",
+            "entityViewExternalId": "CogniteTimeSeries",
+            "targetViewSearchProperty": "name",
+            "targetViewFilterValues": [],
+            "entityViewSearchProperty": "name",
+            "entityViewFilterValues": [],
+        },
+        "cdf_file_annotation": {
+            "fileSchemaSpace": "cdf_cdm",
+            "fileInstanceSpace": None,
+            "fileExternalId": "CogniteFile",
+            "targetEntitySchemaSpace": "cdf_cdm",
+            "targetEntityInstanceSpace": None,
+            "targetEntityExternalId": "CogniteAsset",
+        },
+    },
+    "isa_manufacturing_extension": {
+        "cdf_entity_matching": {
+            "schemaSpace": "dm_dom_isa_manufacturing",
+            "assetInstanceSpace": None,
+            "timeseriesInstanceSpace": None,
+            "fileInstanceSpace": None,
+            "assetViewExternalId": "ISAAsset",
+            "timeseriesViewExternalId": "ISATimeSeries",
+            "fileViewExternalId": "ISAFile",
+            "targetViewExternalId": "ISAAsset",
+            "entityViewExternalId": "ISATimeSeries",
+            "targetViewSearchProperty": "name",
+            "targetViewFilterValues": [],
+            "entityViewSearchProperty": "name",
+            "entityViewFilterValues": [],
+        },
+        "cdf_file_annotation": {
+            "fileSchemaSpace": "dm_dom_isa_manufacturing",
+            "fileInstanceSpace": None,
+            "fileExternalId": "ISAFile",
+            "targetEntitySchemaSpace": "dm_dom_isa_manufacturing",
+            "targetEntityInstanceSpace": None,
+            "targetEntityExternalId": "ISAAsset",
+        },
+    },
+    "cfihos_oil_and_gas_extension": {
+        "cdf_entity_matching": {
+            "schemaSpace": "dm_dom_oil_and_gas",
+            "assetInstanceSpace": None,
+            "timeseriesInstanceSpace": None,
+            "fileInstanceSpace": None,
+            "assetViewExternalId": "Tag",
+            "timeseriesViewExternalId": "TimeSeriesData",
+            "fileViewExternalId": "Files",
+            "targetViewExternalId": "Tag",
+            "entityViewExternalId": "TimeSeriesData",
+            "targetViewSearchProperty": "name",
+            "targetViewFilterValues": [],
+            "entityViewSearchProperty": "name",
+            "entityViewFilterValues": [],
+            "reservedWordPrefix": "",
+        },
+        "cdf_file_annotation": {
+            "fileSchemaSpace": "dm_dom_oil_and_gas",
+            "fileInstanceSpace": None,
+            "fileExternalId": "Files",
+            "targetEntitySchemaSpace": "dm_dom_oil_and_gas",
+            "targetEntityInstanceSpace": None,
+            "targetEntityExternalId": "Tag",
+        },
+    },
+}
+
+# Fallback category for modules that may live in old nested-category config files
+# (e.g. created before the flat-structure migration).  Used by _write_config_update
+# to try an alternative dotted path when the flat path is not found.
+_MODULE_CATEGORY_FALLBACK: dict[str, str] = {
+    "cdf_project_foundation": "common",
+    "cdf_entity_matching": "contextualization",
+    "cdf_file_annotation": "contextualization",
+    "cdf_pi_extractor": "sourcesystem",
+    "cdf_sap_extractor": "sourcesystem",
+    "cdf_opcua_extractor": "sourcesystem",
+    "cdf_db_extractor": "sourcesystem",
+    "cdf_files_extractor": "sourcesystem",
+    "isa_manufacturing_extension": "datamodels",
+    "isa_manufacturing_extension_search": "datamodels",
+    "cfihos_oil_and_gas_extension": "datamodels",
+    "cfihos_oil_and_gas_extension_search": "datamodels",
+}
+
+# Keys that are stale in an existing config when cdf_project_foundation is
+# present (foundation covers these capabilities; standalone modules added them
+# before foundation was installed).
+_STALE_CTX_KEYS: tuple[str, ...] = (
+    # Contextualization stale keys.
+    "variables.modules.contextualization.cdf_file_annotation.groupSourceId",
+    "variables.modules.contextualization.cdf_entity_matching.entity_matching_processing_group_source_id",
+    "variables.modules.cdf_entity_matching.reservedWordPrefix",
+    "variables.modules.contextualization.cdf_entity_matching.reservedWordPrefix",
+    # Stale ISA DM vars — previously written by setup_project.py, now owned by the module.
+    "variables.modules.isa_manufacturing_extension.isaSchemaSpace",
+    "variables.modules.isa_manufacturing_extension.isaInstanceSpace",
+    "variables.modules.datamodels.isa_manufacturing_extension.isaSchemaSpace",
+    "variables.modules.datamodels.isa_manufacturing_extension.isaInstanceSpace",
+    # CFIHOS DM source IDs — covered by foundation persona groups.
+    "variables.modules.cfihos_oil_and_gas_extension.owner_source_id",
+    "variables.modules.cfihos_oil_and_gas_extension.read_source_id",
+    "variables.modules.datamodels.cfihos_oil_and_gas_extension.owner_source_id",
+    "variables.modules.datamodels.cfihos_oil_and_gas_extension.read_source_id",
+    # cdf_ingestion's own group source ID (Demo pack) — only ever referenced by its
+    # own auth/{user,workflow}.Group.yaml, which remove_redundant_auth_files() deletes
+    # once cdf_project_foundation's persona groups are present.
+    "variables.modules.cdf_ingestion.groupSourceId",
+    "variables.modules.common.cdf_ingestion.groupSourceId",
+)
+
+# ── Domain helpers ─────────────────────────────────────────────────────────────
+
+
+def group_name(persona: str, site: str, env: str) -> str:
+    """SOP pattern: ``<persona>_[{site}_]all_<env>``; env is 'dev' (dev+test) or 'prod'."""
+    segments = [persona] + ([site] if site else []) + ["all", GROUP_ENV[env]]
+    return "_".join(segments)
+
+
+def _cdm_instance_space(site: str) -> str:
+    """Instance space for the base-CDM fallback: ``sp_{site}_instances``.
+
+    Falls back to ``sp_cdm_instances`` when no site has been set yet (matches
+    the "no-site" placeholder convention used for the other foundation defaults).
+    """
+    return f"sp_{site}_instances" if site else "sp_cdm_instances"
+
+
+def _cfihos_instance_space(site: str) -> str:
+    """Instance space for CFIHOS: ``inst_{site}_cfihos_oil_and_gas``"""
+    return f"inst_{site}_cfihos_oil_and_gas" if site else "inst_cfihos_oil_and_gas"
+
+
+def _isa_instance_space(site: str) -> str:
+    """Instance space for ISA manufacturing: ``inst_{site}_isa_manufacturing``"""
+    return f"inst_{site}_isa_manufacturing" if site else "inst_isa_manufacturing"
+
+
+def _merge_ingestion_instance_spaces(existing: list[str], instance_space: str, previous_site: str) -> list[str]:
+    """Replace the stale CFIHOS entry with ``instance_space``; keep every other entry.
+
+    ``cdf_cdm_units`` is added when missing. The stale entries are the previous
+    site's space and the no-site default.
+    """
+    stale = {_cfihos_instance_space(previous_site), _cfihos_instance_space("")}
+    merged = [instance_space]
+    for space in [*existing, "cdf_cdm_units"]:
+        if space not in stale and space not in merged:
+            merged.append(space)
+    return merged
+
+
+def resolve_contextualization_variables(
+    variant: str,
+    instance_space: str,
+    installed_ctx: list[str],
+) -> dict[str, dict]:
+    """Build ctx variable overrides only for modules that are actually installed."""
+    templates = CONTEXTUALIZATION_VARIABLES[variant]
+    result: dict[str, dict] = {}
+    for module, overrides in templates.items():
+        if module not in installed_ctx:
+            continue
+        result[module] = {key: (instance_space if value is None else value) for key, value in overrides.items()}
+    return result
+
+
+_MODULE_LABELS: dict[str, str] = {
+    "cdf_pi_extractor": "PI Extractor",
+    "cdf_sap_extractor": "SAP Extractor",
+    "cdf_opcua_extractor": "OPC-UA Extractor",
+    "cdf_db_extractor": "DB Extractor",
+    "cdf_files_extractor": "Files Extractor",
+}
+
+# .env variable name for each SS module's extractor group source ID.
+_MODULE_EXTRACTOR_ENV_VAR: dict[str, str] = {
+    "cdf_pi_extractor": "PI_EXTRACTOR_GROUP_SOURCE_ID",
+    "cdf_sap_extractor": "SAP_EXTRACTOR_GROUP_SOURCE_ID",
+    "cdf_opcua_extractor": "OPCUA_EXTRACTOR_GROUP_SOURCE_ID",
+    "cdf_db_extractor": "DB_EXTRACTOR_GROUP_SOURCE_ID",
+    "cdf_files_extractor": "FILES_EXTRACTOR_GROUP_SOURCE_ID",
+}
+
+# Instance space suffix per extractor module — combined with location to form
+# a per-extractor space: inst_{location}_{suffix}.
+_MODULE_INSTANCE_SPACE_SUFFIX: dict[str, str] = {
+    "cdf_pi_extractor": "pi",
+    "cdf_sap_extractor": "sap",
+    "cdf_opcua_extractor": "opcua",
+    "cdf_db_extractor": "db",
+    "cdf_files_extractor": "files",
+}
+
+
+def _module_instance_space(module: str, location: str) -> str:
+    """Return a per-extractor instance space name: ``inst_{location}_{suffix}``.
+
+    Falls back to ``inst_{suffix}`` when no location is set, matching the module's
+    ``default.config.yaml``.
+    """
+    suffix = _MODULE_INSTANCE_SPACE_SUFFIX.get(module, module)
+    return f"inst_{location}_{suffix}" if location else f"inst_{suffix}"
+
+
+# Unscoped data set externalId per extractor module — the ``default.config.yaml``
+# value, combined with location to form ds_{data_type}_{location}.
+_MODULE_DATASET_BASE: dict[str, str] = {
+    "cdf_pi_extractor": "ds_pi",
+    "cdf_sap_extractor": "ds_sap",
+    "cdf_opcua_extractor": "ds_opcua",
+    "cdf_db_extractor": "ds_db",
+    "cdf_files_extractor": "ds_files",
+}
+
+
+def _module_dataset(module: str, location: str) -> str:
+    """Return a per-extractor data set externalId: ``ds_{data_type}_{location}``.
+
+    Falls back to the unscoped base when no location is set, matching the module's
+    ``default.config.yaml`` so a project configured without the wizard still resolves.
+    """
+    base = _MODULE_DATASET_BASE.get(module, module)
+    return f"{base}_{location}" if location else base
+
+
+def _wizard_generated_datasets(sites: tuple[str, ...]) -> set[str]:
+    """Every extractor data set id this wizard can generate for *sites*.
+
+    Used to drop ids an earlier wizard run wrote, so they are replaced rather than
+    accumulated.  Matching is exact — a data set that merely shares a prefix with an
+    extractor base (``ds_files_archive``) is not a wizard-generated id and is kept.
+
+    The unscoped base is always included: it is the ``default.config.yaml`` value
+    Toolkit seeds a new project with, and no such data set is deployed once a
+    location is set.
+    """
+    return {_module_dataset(module, site) for module in _MODULE_DATASET_BASE for site in ("", *sites)}
+
+
+def _module_label(module: str) -> str:
+    return _MODULE_LABELS.get(module, module)
+
+
+def resolve_sourcesystem_variables(
+    installed_modules: list[str],
+    env: str,
+    location: str,
+    integration_owners: dict[str, tuple[str, str]] | None = None,
+    data_owners: dict[str, tuple[str, str]] | None = None,
+    extractor_group_source_ids: dict[str, str] | None = None,
+) -> dict[str, dict[str, str]]:
+    result: dict[str, dict[str, str]] = {}
+    for module in installed_modules:
+        vars_: dict[str, str] = {
+            "instanceSpace": _module_instance_space(module, location),
+            "dataset": _module_dataset(module, location),
+            "environment": env,
+            "location": location,
+        }
+        if integration_owners and module in integration_owners:
+            name, email = integration_owners[module]
+            if name:
+                vars_["integration_owner_name"] = name
+            if email:
+                vars_["integration_owner_email"] = email
+            vars_["integration_owner_send_notification"] = "true" if email else "false"
+        if data_owners and module in data_owners:
+            name, email = data_owners[module]
+            if name:
+                vars_["data_owner_name"] = name
+            if email:
+                vars_["data_owner_email"] = email
+            vars_["data_owner_send_notification"] = "true" if email else "false"
+        if extractor_group_source_ids and module in extractor_group_source_ids:
+            env_var = extractor_group_source_ids[module]
+            vars_["extractor_group_source_id"] = f"${{{env_var}}}"
+        result[module] = vars_
+    return result
+
+
+def build_foundation_vars(
+    variant: str,
+    env: str,
+    site: str,
+    datasets: list[str] | None = None,
+) -> dict:
+    """Variables block for ``variables.modules.cdf_project_foundation``."""
+    ingestion = dict(INGESTION_FOUNDATION_VARIABLES[variant])
+    ingestion["site"] = site
+    if variant == "cdm":
+        ingestion["instanceSpace"] = _cdm_instance_space(site)
+    elif variant == "isa_manufacturing_extension":
+        ingestion["instanceSpace"] = _isa_instance_space(site)
+    elif variant == "cfihos_oil_and_gas_extension":
+        ingestion["instanceSpace"] = _cfihos_instance_space(site)
+    # Always write dataset so the key exists; empty list when no SS modules installed.
+    ingestion["dataset"] = datasets_for_variant(variant, datasets)
+    ingestion["additionalSchemaSpaces"] = additional_schema_spaces_for_variant(variant)
+    for persona in PERSONAS:
+        ingestion[f"{persona}GroupName"] = group_name(persona, site, env)
+        ingestion[f"{persona}SourceId"] = f"${{{persona.upper()}_SOURCE_ID}}"
+    return ingestion
+
+
+def build_overlay(
+    variant: str,
+    env: str,
+    site: str,
+    installed_ctx: list[str],
+    app_owner: str = "",
+    integration_owners: dict[str, tuple[str, str]] | None = None,
+    data_owners: dict[str, tuple[str, str]] | None = None,
+    datasets: list[str] | None = None,
+    cfihos_admin_user: str = "",
+    cfihos_integration_owner_name: str = "",
+    cfihos_integration_owner_email: str = "",
+    extractor_group_source_ids: dict[str, str] | None = None,
+    repo_root: Path | None = None,
+    previous_site: str = "",
+    ingestion_instance_spaces: list[str] | None = None,
+) -> dict:
+    """Full ``variables.modules`` overlay dict to merge into a config file.
+
+    Uses a *flat* module-name structure (no category wrappers) to match Toolkit
+    conventions, ensuring ``_write_config_update`` can locate every key in existing
+    config files.
+
+    ``datasets`` should be read from the existing ``config.<env>.yaml`` (populated
+    by Toolkit at module-init time).  The ``default.config.yaml`` files are not
+    reliable as Toolkit may delete them after consuming them.  Extractor datasets in
+    that list are recomputed from ``site`` instead; ``previous_site`` is the site
+    recorded in that config, so ids the last run wrote are replaced rather than
+    accumulated.
+    """
+    instance_space = INGESTION_FOUNDATION_VARIABLES[variant]["instanceSpace"]
+    if variant == "cdm":
+        instance_space = _cdm_instance_space(site)
+    elif variant == "isa_manufacturing_extension":
+        instance_space = _isa_instance_space(site)
+    elif variant == "cfihos_oil_and_gas_extension":
+        instance_space = _cfihos_instance_space(site)
+
+    installed_ss = list_installed_source_system_modules(repo_root)
+    ctx_vars = resolve_contextualization_variables(variant, instance_space, installed_ctx)
+
+    if app_owner and "cdf_file_annotation" in ctx_vars:
+        ctx_vars["cdf_file_annotation"]["ApplicationOwner"] = app_owner
+
+    # Extractor data sets are derived from the installed modules and the site, not
+    # taken from the config — the value on disk is stale whenever the site changes.
+    # Only ids this wizard itself could have written are dropped; everything else
+    # read from the config (cdf_ingestion's dataset, or one the user added) is kept.
+    generated = _wizard_generated_datasets((site, previous_site))
+    ss_datasets = [_module_dataset(m, site) for m in installed_ss]
+    foundation_datasets = ss_datasets + [d for d in (datasets or []) if d not in generated]
+
+    # Always write dataset (even as empty list) so the key is always present.
+    modules_vars: dict[str, dict[str, object]] = {
+        "cdf_project_foundation": build_foundation_vars(variant, env, site, foundation_datasets),
+    }
+    modules_vars.update(ctx_vars)
+    if installed_ss:
+        modules_vars.update(
+            resolve_sourcesystem_variables(
+                installed_ss, env, site, integration_owners, data_owners, extractor_group_source_ids
+            )
+        )
+    # instanceSpaces for consumer group: project-level DM space + one per installed extractor.
+    # Always written so the key is present even when no SS modules are installed.
+    modules_vars["cdf_project_foundation"]["instanceSpaces"] = [instance_space] + [
+        _module_instance_space(m, site) for m in installed_ss
+    ]
+    if variant == "cfihos_oil_and_gas_extension":
+        # CFIHOS uses its own space / instance_space variables — not the ISA ones.
+        # instance_space is site-derived (falls back to the domain-only default
+        # when no site has been entered yet); space is fixed.
+        cfihos_dm_vars: dict[str, str] = {"instance_space": _cfihos_instance_space(site), "environment": env}
+        if cfihos_admin_user:
+            cfihos_dm_vars["admin_user"] = cfihos_admin_user
+        if cfihos_integration_owner_name:
+            cfihos_dm_vars["integrationOwnerName"] = cfihos_integration_owner_name
+        if cfihos_integration_owner_email:
+            cfihos_dm_vars["integrationOwnerEmail"] = cfihos_integration_owner_email
+        modules_vars[variant] = cfihos_dm_vars
+
+        # If the search solution module is also installed, keep its instance_space
+        # in sync with the enterprise module.
+        data_models_dir = get_data_models_dir(repo_root)
+        if (data_models_dir / "cfihos_oil_and_gas_extension_search").is_dir():
+            modules_vars["cfihos_oil_and_gas_extension_search"] = {
+                "instance_space": _cfihos_instance_space(site),
+                "environment": env,
+            }
+
+        # Demo pack's *_data_dump modules share the same CFIHOS instance space —
+        # keep each one's instance_space in sync with the site, same as the
+        # datamodel modules above.
+        for module in list_installed_demo_source_system_modules(repo_root):
+            modules_vars[module] = {"instance_space": _cfihos_instance_space(site)}
+
+        # cdf_ingestion's consumer group reads from the CFIHOS instance space plus
+        # the base-CDM units space — only the CFIHOS entry is replaced; entries the
+        # user added are kept.
+        if (get_pack_root(repo_root) / "modules" / "common" / "cdf_ingestion").is_dir():
+            modules_vars["cdf_ingestion"] = {
+                "instanceSpaces": _merge_ingestion_instance_spaces(
+                    ingestion_instance_spaces or [], instance_space, previous_site
+                )
+            }
+    elif variant == "isa_manufacturing_extension":
+        # ISA's instance_space is site-derived the same way (falls back to the
+        # domain-only default when no site has been entered yet).
+        modules_vars["isa_manufacturing_extension"] = {
+            "instance_space": _isa_instance_space(site),
+            "environment": env,
+        }
+        # If the ISA search solution module is also installed, keep its
+        # instance_space in sync with the enterprise module.
+        data_models_dir = get_data_models_dir(repo_root)
+        if (data_models_dir / "isa_manufacturing_extension_search").is_dir():
+            modules_vars["isa_manufacturing_extension_search"] = {
+                "instance_space": _isa_instance_space(site),
+                "environment": env,
+            }
+
+    return {"variables": {"modules": modules_vars}}
+
+
+def config_path(pack_root: Path, env: str) -> Path:
+    """Config files are always ``config.<env>.yaml`` — site is for group names only."""
+    return pack_root / f"config.{env}.yaml"
+
+
+def target_config_paths(pack_root: Path, envs: tuple[str, ...]) -> dict[str, Path]:
+    return {env: config_path(pack_root, env) for env in envs}
+
+
+def resolve_variant(args_variant: str | None, data_models_dir: Path) -> str:
+    if args_variant:
+        if args_variant not in INGESTION_FOUNDATION_VARIABLES:
+            raise SystemExit(
+                f"ERROR: Unknown --variant '{args_variant}'.\n  Supported: {', '.join(INGESTION_FOUNDATION_VARIABLES)}"
+            )
+        return args_variant
+    return detect_data_model_variant(data_models_dir)
+
+
+def resolve_pack_kind(variant: str, sourcesystem_dir: Path) -> Literal["foundation", "demo"]:
+    """Resolve which pack (Foundation or Demo) this project is set up for.
+
+    ISA has no Demo/synthetic-data path — cdf_pi_data_dump/cdf_sap_data_dump/
+    cdf_sharepoint_data_dump are CFIHOS-shaped and write into the CFIHOS DM only —
+    so an ISA project is always Foundation, without asking.
+
+    Otherwise, derived from the installed sourcesystem modules (see
+    ``detect_pack_kind``) — there is no override flag, since every cleanup
+    function downstream already makes its own decision from installed module
+    directories rather than from this value. When detection is ``"ambiguous"``
+    (neither or both kinds present), prompt the user, defaulting to Foundation.
+    """
+    if variant == "isa_manufacturing_extension":
+        return "foundation"
+    detected = detect_pack_kind(sourcesystem_dir)
+    if detected == "ambiguous":
+        return _prompt_pack_kind()
+    return detected
+
+
+def resolve_pack_kind_for_check(variant: str, sourcesystem_dir: Path) -> Literal["foundation", "demo"]:
+    """Non-interactive counterpart of ``resolve_pack_kind`` for ``--check`` (CI) mode.
+
+    CI must never block on a prompt, so an ambiguous detection raises ``SystemExit``
+    instead — same shape as ``detect_data_model_variant``'s multiple-data-models error.
+    There is no override flag: a project with both extractor and data-dump modules
+    installed (or neither) is a malformed module selection that must be fixed, not
+    papered over. ISA is always Foundation (see ``resolve_pack_kind``) — never ambiguous.
+    """
+    if variant == "isa_manufacturing_extension":
+        return "foundation"
+    detected = detect_pack_kind(sourcesystem_dir)
+    if detected == "ambiguous":
+        raise SystemExit(
+            "\n".join(
+                [
+                    t(
+                        "ERROR: Could not determine deployment pack kind from installed "
+                        "sourcesystem modules under 'modules/sourcesystem/'"
+                    ),
+                    t("  (found both extractor and data-dump modules, or neither)."),
+                    t("  A project should have either *_extractor modules (Foundation) or"),
+                    t("  *_data_dump modules (Demo), not both or neither — fix the module selection."),
+                ]
+            )
+        )
+    return detected
+
+
+# ── Config file writers ────────────────────────────────────────────────────────
+
+_YAML_HEADER = (
+    "# Managed by modules/common/cdf_project_foundation/scripts/setup_project.py\n"
+    "# Re-run the wizard to refresh, or use --check in CI.\n"
+)
+
+
+def _skeleton_config(env: str, project: str) -> dict:
+    return {
+        "environment": {
+            "name": env,
+            "project": project,
+            "validation-type": ENVIRONMENT_VALIDATION_TYPE.get(env, "dev"),
+            "selected": ["modules"],
+        },
+        "variables": {"modules": {}},
+    }
+
+
+def _write_config_fresh(path: Path, env: str, project: str, overlay: dict) -> None:
+    """Create a brand-new config file from the skeleton + overlay."""
+    merged = deep_merge(_skeleton_config(env, project), overlay)
+    path.write_text(
+        _YAML_HEADER + yaml.dump(merged, sort_keys=False, allow_unicode=True, default_flow_style=False),
+        encoding="utf-8",
+    )
+    _ok(t("Created  {path.name}").format(path=path))
+
+
+def _write_config_update(path: Path, project: str, overlay: dict, skip_backup: bool = False) -> bool:
+    """Update an existing config file in-place, preserving comments and blank lines.
+
+    Returns ``True`` when at least one value changed.
+    Set ``skip_backup=True`` when the file was just created (no prior version to back up).
+    """
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    changed = False
+
+    # Update environment.project.
+    _, c = _yaml_set_value(lines, "environment.project", project)
+    changed = changed or c
+
+    # Update every module variable from the overlay.
+    # Tries the flat path first (new structure), then the old nested-category path
+    # (e.g. variables.modules.common.cdf_project_foundation.*) for backwards
+    # compatibility with configs created before the flat-structure migration.
+    for module, mod_vars in overlay.get("variables", {}).get("modules", {}).items():
+        if not isinstance(mod_vars, dict):
+            continue
+        for key, val in mod_vars.items():
+            yaml_val = val if isinstance(val, str) else yaml.dump(val, default_flow_style=True).strip()
+            # 1. Try flat path: variables.modules.<module>.<key>
+            old, c = _yaml_set_value(lines, f"variables.modules.{module}.{key}", yaml_val)
+            if old is None and not c:
+                # 2. Try legacy nested-category path.
+                category = _MODULE_CATEGORY_FALLBACK.get(module)
+                if category:
+                    old, c = _yaml_set_value(
+                        lines,
+                        f"variables.modules.{category}.{module}.{key}",
+                        yaml_val,
+                    )
+            if old is None and not c and _yaml_insert_key(lines, f"variables.modules.{module}", key, yaml_val):
+                # 3. Key truly absent — insert under flat path.
+                c = True
+            changed = changed or c
+
+    # Remove stale standalone-module keys now covered by cdf_project_foundation.
+    for stale in _STALE_CTX_KEYS:
+        if _yaml_find_line(lines, stale) is not None:
+            _yaml_delete_key(lines, stale)
+            changed = True
+
+    if not changed:
+        return False
+
+    if not skip_backup:
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        backup = path.with_suffix(f".{timestamp}.bak")
+        shutil.copy2(path, backup)
+    path.write_text("".join(lines), encoding="utf-8")
+    if not skip_backup:
+        from _style import _C
+
+        _ok(
+            t("Updated  {path.name}  (backup: {backup})").format(
+                path=path,
+                backup=f"{_C.DIM}{backup.name}{_C.RESET}",
+            )
+        )
+    return True
+
+
+def _replicate_config_from_existing(pack_root: Path, env: str, project: str) -> Path | None:
+    """Find an existing config in pack_root and copy it as config.<env>.yaml.
+
+    Updates environment.name and environment.validation-type in-place.
+    Returns the new path if created, None if no source config was found.
+    """
+    # Find any existing config to replicate from
+    source: Path | None = None
+    for candidate_env in ENVIRONMENTS:
+        candidate = pack_root / f"config.{candidate_env}.yaml"
+        if candidate.exists() and candidate_env != env:
+            source = candidate
+            break
+    if source is None:
+        return None
+
+    dest = pack_root / f"config.{env}.yaml"
+    shutil.copy2(source, dest)
+    lines = dest.read_text(encoding="utf-8").splitlines(keepends=True)
+    _yaml_set_value(lines, "environment.name", env)
+    _yaml_set_value(lines, "environment.validation-type", ENVIRONMENT_VALIDATION_TYPE.get(env, "dev"))
+    _yaml_set_value(lines, "environment.project", project)
+    dest.write_text("".join(lines), encoding="utf-8")
+    return dest
+
+
+def write_config(path: Path, env: str, project: str, overlay: dict) -> bool:
+    """Create or update a config file. Returns ``True`` if the file changed."""
+    if not path.exists():
+        # Try to replicate from an existing env config first; fall back to fresh skeleton.
+        replicated = _replicate_config_from_existing(path.parent, env, project)
+        if replicated:
+            _ok(t("Created  {path.name}  (replicated from existing config)").format(path=path))
+            # Apply the overlay in-place. Skip backup — the file was just created.
+            # Always return True regardless of whether the overlay changed anything,
+            # since the file itself is new.
+            _write_config_update(path, project, overlay, skip_backup=True)
+            return True
+        _write_config_fresh(path, env, project, overlay)
+        return True
+    return _write_config_update(path, project, overlay)
+
+
+# ── Redundant auth cleanup ─────────────────────────────────────────────────────
+
+
+def _rmdir_if_empty(directory: Path) -> None:
+    """Remove ``directory`` if it exists and is now empty."""
+    if directory.is_dir() and not any(directory.iterdir()):
+        directory.rmdir()
+
+
+def remove_redundant_auth_files(repo_root: Path | None = None) -> list[Path]:
+    """Remove auth group files covered by cdf_project_foundation.
+
+    Covers contextualization modules (entity matching, file annotation) and
+    tools/apps modules (qualitizer) whose standalone auth becomes redundant
+    once the foundation persona groups are deployed. Removes each module's
+    ``auth/`` directory too once it is left empty.
+    """
+    modules_root = get_pack_root(repo_root) / "modules"
+    removed: list[Path] = []
+
+    # Contextualization modules.
+    ctx_dir = get_contextualization_dir(repo_root)
+    for module_dir in list_installed_contextualization_modules(repo_root):
+        auth_dir = ctx_dir / module_dir / "auth"
+        for rel_path in CONTEXTUALIZATION_REDUNDANT_AUTH[module_dir]:
+            auth_file = ctx_dir / module_dir / rel_path
+            if auth_file.exists():
+                auth_file.unlink()
+                removed.append(auth_file)
+                _ok(t("Removed redundant auth: {auth_file}").format(auth_file=auth_file.relative_to(modules_root)))
+        _rmdir_if_empty(auth_dir)
+
+    # Tools / apps modules.
+    for module_rel, auth_files in TOOLS_REDUNDANT_AUTH.items():
+        module_dir = modules_root / module_rel
+        if not module_dir.is_dir():
+            continue
+        auth_dir = module_dir / "auth"
+        for rel_path in auth_files:
+            auth_file = module_dir / rel_path
+            if auth_file.exists():
+                auth_file.unlink()
+                removed.append(auth_file)
+                _ok(t("Removed redundant auth: {auth_file}").format(auth_file=auth_file.relative_to(modules_root)))
+        _rmdir_if_empty(auth_dir)
+
+    return removed
+
+
+# Space resource that creates the base-CDM instance space. Not shipped as a
+# module asset — cdf_project_foundation has no fixed instance space of its own,
+# so this is written by the wizard only when no data model extension is
+# installed (an installed extension ships its own instance-space resource).
+_CDM_INSTANCE_SPACE_REL_PATH = "modules/common/cdf_project_foundation/data_modeling/cdm_instance_space.Space.yaml"
+_CDM_INSTANCE_SPACE_CONTENT = (
+    "space: {{ instanceSpace }}\n"
+    "name: Instance space\n"
+    "description: Base Cognite Data Model (CogniteCore) instance space\n"
+)
+
+
+def restore_cdm_space_file(variant: str, repo_root: Path | None = None) -> Path | None:
+    """Write the CDM instance-space file when no data model extension is installed.
+
+    No-op unless ``variant == "cdm"``. Since the file is never shipped in the
+    module, this is the only place it gets created — including when a project
+    switches back to ``cdm`` after previously using an extension.
+    """
+    if variant != "cdm":
+        return None
+    space_file = get_pack_root(repo_root) / _CDM_INSTANCE_SPACE_REL_PATH
+    if space_file.exists():
+        return None
+    space_file.parent.mkdir(parents=True, exist_ok=True)
+    space_file.write_text(_CDM_INSTANCE_SPACE_CONTENT, encoding="utf-8")
+    _ok(t("Created CDM instance space file: {path}").format(path=_CDM_INSTANCE_SPACE_REL_PATH))
+    return space_file
+
+
+_CFIHOS_SPACE_RE = re.compile(r"inst_(?:.+_)?cfihos_oil_and_gas")
+_RAW_CSV_SPACE_COLUMNS: tuple[str, ...] = ("space", "startNodeSpace", "endNodeSpace")
+
+
+def _patch_raw_csv_spaces(csv_path: Path, instance_space: str) -> bool:
+    """Rewrite CFIHOS instance-space values in the space columns of a RAW CSV.
+
+    Only ``_RAW_CSV_SPACE_COLUMNS`` are touched — ``externalId`` values embed the
+    space too, but are identifiers and are left as they are.
+    """
+    with csv_path.open(newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        columns = [c for c in _RAW_CSV_SPACE_COLUMNS if c in fieldnames]
+        if not columns:
+            return False
+        rows = list(reader)
+    changed = False
+    for row in rows:
+        for column in columns:
+            if _CFIHOS_SPACE_RE.fullmatch(row[column]) and row[column] != instance_space:
+                row[column] = instance_space
+                changed = True
+    if changed:
+        with csv_path.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+    return changed
+
+
+def patch_data_dump_upload_data_spaces(variant: str, site: str, repo_root: Path | None = None) -> list[Path]:
+    """Patch the literal CFIHOS instance space in CFIHOS data-dump ``upload_data`` files.
+
+    ``upload_data/`` files are consumed directly from the module source tree by
+    ``cdf data upload`` — they are never passed through ``cdf build``, so Toolkit
+    ``{{ variable }}`` substitution never applies to them. The space has to be a
+    literal value, kept in sync with ``instance_space`` by this wizard instead (see
+    ``_cfihos_instance_space``). Patches ``template.space`` in ``CogniteFileContent``
+    manifests and the space columns of RAW CSVs. ``fileDirectory`` is resolved from the
+    directory ``cdf data upload`` runs in, so it is prefixed with the organization
+    directory from ``cdf.toml`` when one is set. A ``CogniteFileContent`` manifest whose
+    space cannot be located is reported with a warning.
+    """
+    if variant != "cfihos_oil_and_gas_extension":
+        return []
+    instance_space = _cfihos_instance_space(site)
+    org_dir = get_org_dir_name(repo_root)
+    sourcesystem_dir = get_sourcesystem_dir(repo_root)
+    patched: list[Path] = []
+    for module in list_installed_demo_source_system_modules(repo_root):
+        upload_dir = sourcesystem_dir / module / "upload_data"
+        if not upload_dir.is_dir():
+            continue
+        for manifest in sorted(upload_dir.glob("*.Manifest.yaml")):
+            lines = manifest.read_text().splitlines(keepends=True)
+            if not any(line.strip() == "kind: CogniteFileContent" for line in lines):
+                continue
+            old, changed = _yaml_set_value(lines, "template.space", instance_space)
+            if org_dir:
+                directory = _yaml_get_value(lines, "fileDirectory")
+                if directory and not directory.startswith(f"{org_dir}/"):
+                    _, dir_changed = _yaml_set_value(lines, "fileDirectory", f"{org_dir}/{directory}")
+                    changed = changed or dir_changed
+            if old is None:
+                _warn(
+                    t("Could not locate template.space in {module}/upload_data/{name}").format(
+                        module=module, name=manifest.name
+                    )
+                )
+            elif changed:
+                manifest.write_text("".join(lines))
+                patched.append(manifest)
+        for csv_path in sorted(upload_dir.glob("*.RawRows.csv")):
+            if _patch_raw_csv_spaces(csv_path, instance_space):
+                patched.append(csv_path)
+    return patched
+
+
+# ── Staging → test migration ──────────────────────────────────────────────────
+
+
+def _migrate_staging_to_test(pack_root: Path) -> bool:
+    """Rename ``config.staging.yaml`` → ``config.test.yaml`` with corrected fields.
+
+    Toolkit creates a ``staging`` environment; the Foundation DP uses ``test``.
+    Updates ``environment.name`` to ``test`` and ``environment.validation-type``
+    to ``prod`` (staging is pre-prod and should use production-like validation).
+
+    Returns ``True`` if a migration was performed.
+    """
+    staging = pack_root / "config.staging.yaml"
+    test = pack_root / "config.test.yaml"
+
+    if not staging.exists():
+        return False
+    if test.exists():
+        _warn(
+            t(
+                "Both config.staging.yaml and config.test.yaml exist — "
+                "skipping automatic staging migration. Remove one manually."
+            )
+        )
+        return False
+
+    lines = staging.read_text(encoding="utf-8").splitlines(keepends=True)
+    _yaml_set_value(lines, "environment.name", "test")
+    _yaml_set_value(lines, "environment.validation-type", "prod")
+    test.write_text("".join(lines), encoding="utf-8")
+    staging.unlink()
+    _ok(t("Migrated config.staging.yaml → config.test.yaml  (validation-type: prod)"))
+    return True
+
+
+# ── Synthetic data removal ────────────────────────────────────────────────────
+
+_CFIHOS_SYNTHETIC_DIRS: tuple[str, ...] = (
+    "upload_data",
+    "raw",
+    "workflows",
+    "transformations",
+    "cfihos_model_config",
+)
+
+_ISA_SYNTHETIC_DIRS: tuple[str, ...] = (
+    "files",
+    "raw",
+    "transformations",
+    "workflows",
+)
+
+# Image/diagram files to remove from DM modules (not needed in production deployments).
+_DM_IMAGE_PATTERNS: tuple[str, ...] = ("*.png", "*.svg", "*.drawio", "*.ipynb")
+
+
+def remove_synthetic_data(variant: str, repo_root: Path | None = None) -> int:
+    """Delete synthetic data directories and diagram files from the *installed* data model.
+
+    - CFIHOS: upload_data/, raw/, workflows/, transformations/ + image files
+    - ISA: files/, raw/, transformations/, workflows/ + image files
+
+    Only touches the extension matching ``variant`` — with ``variant == "cdm"``
+    (no extension selected) this is a no-op, even if a stray ISA/CFIHOS directory
+    happens to be present. Idempotent: does nothing if already cleaned up.
+
+    Returns the total number of files removed.
+    """
+    data_models_dir = get_data_models_dir(repo_root)
+    total = 0
+
+    def _remove_dirs(module_dir: Path, dirs: tuple[str, ...]) -> int:
+        count = 0
+        for dir_name in dirs:
+            target = module_dir / dir_name
+            if target.is_dir():
+                count += sum(1 for f in target.rglob("*") if f.is_file())
+                shutil.rmtree(target)
+        return count
+
+    def _remove_images(module_dir: Path) -> int:
+        count = 0
+        for pattern in _DM_IMAGE_PATTERNS:
+            for f in module_dir.glob(pattern):
+                f.unlink()
+                count += 1
+        return count
+
+    if variant == "cfihos_oil_and_gas_extension":
+        cfihos_dir = data_models_dir / "cfihos_oil_and_gas_extension"
+        if cfihos_dir.is_dir():
+            total += _remove_dirs(cfihos_dir, _CFIHOS_SYNTHETIC_DIRS)
+            total += _remove_images(cfihos_dir)
+
+    if variant == "isa_manufacturing_extension":
+        isa_dir = data_models_dir / "isa_manufacturing_extension"
+        if isa_dir.is_dir():
+            total += _remove_dirs(isa_dir, _ISA_SYNTHETIC_DIRS)
+            total += _remove_images(isa_dir)
+
+    return total
+
+
+# ── Diagram-annotation redundancy ───────────────────────────────────────────────
+#
+# cdf_sharepoint_data_dump ships a standalone synthetic diagram-annotation pipeline
+# (RAW rows + transformations + its own workflow) that produces CogniteDiagramAnnotation
+# edges without needing cdf_file_annotation at all. It stays fully supported and
+# deployable on its own. It only becomes redundant when cdf_file_annotation (the real
+# annotation pipeline) is *also* installed in the same project — at that point both
+# pipelines would write competing annotation edges, so the wizard removes the synthetic
+# one from this project's copy only. The library module itself is never touched.
+
+_DIAGRAM_ANNOTATION_MODULE = "cdf_sharepoint_data_dump"
+_FILE_ANNOTATION_MODULE = "cdf_file_annotation"
+
+_DIAGRAM_ANNOTATION_FILES: tuple[str, ...] = (
+    "raw/diagram_annotation.Table.yaml",
+    "upload_data/diagram_annotation.Manifest.yaml",
+    "upload_data/diagram_annotation.RawRows.csv",
+    "transformations/tr_diagram_annotation_all_to_cognite_diagram_annotation.Transformation.yaml",
+    "transformations/tr_diagram_annotation_all_to_cognite_diagram_annotation.Transformation.sql",
+    "transformations/tr_diagram_annotation_all_to_file_tag_connection.Transformation.yaml",
+    "transformations/tr_diagram_annotation_all_to_file_tag_connection.Transformation.sql",
+    "transformations/tr_diagram_annotation_all_to_file_equipment_connection.Transformation.yaml",
+    "transformations/tr_diagram_annotation_all_to_file_equipment_connection.Transformation.sql",
+    "workflows/wf_diagram_annotation.Workflow.yaml",
+    "workflows/wf_diagram_annotation.WorkflowVersion.yaml",
+    "workflows/wf_diagram_annotation.WorkflowTrigger.yaml",
+)
+
+# cdf_ingestion task/config vars driving the 3 synthetic-annotation transformations
+# above (see modules/common/cdf_ingestion/workflows/v1.WorkflowVersion.yaml and its
+# default.config.yaml). The sibling "File" task (fileTransformationExternalId) stays.
+_INGESTION_DIAGRAM_ANNOTATION_TASK_VARS: tuple[str, ...] = (
+    "diagramAnnotationTransformationExternalId",
+    "fileTagConnectionTransformationExternalId",
+    "fileEquipmentConnectionTransformationExternalId",
+)
+
+
+def diagram_annotation_is_redundant(repo_root: Path | None = None) -> bool:
+    """True when both the synthetic and real annotation pipelines are installed."""
+    sourcesystem_dir = get_sourcesystem_dir(repo_root)
+    ctx_dir = get_contextualization_dir(repo_root)
+    return (sourcesystem_dir / _DIAGRAM_ANNOTATION_MODULE).is_dir() and (ctx_dir / _FILE_ANNOTATION_MODULE).is_dir()
+
+
+def _remove_ingestion_diagram_annotation_tasks(lines: list[str]) -> int:
+    """Remove ``tasks:`` list items (indent-4 ``- externalId: {{ VAR }}`` blocks) whose
+    transformation var is one of ``_INGESTION_DIAGRAM_ANNOTATION_TASK_VARS``.
+
+    A block runs from its ``- externalId:`` line up to (but not including) the next
+    line indented 4 spaces or less (any sibling task, regardless of its first key since
+    YAML doesn't guarantee key order; any sibling key of ``tasks:`` itself; or the next
+    top-level key). Returns the number of task blocks removed.
+    """
+    marker_re = re.compile(r"^    - externalId:\s*['\"]?\{\{\s*(\w+)\s*\}\}['\"]?\s*$")
+    ranges: list[tuple[int, int]] = []
+    i = 0
+    while i < len(lines):
+        match = marker_re.match(lines[i])
+        if match and match.group(1) in _INGESTION_DIAGRAM_ANNOTATION_TASK_VARS:
+            start = i
+            j = i + 1
+            while j < len(lines) and not re.match(r"^ {0,4}\S", lines[j]):
+                j += 1
+            ranges.append((start, j))
+            i = j
+        else:
+            i += 1
+    for start, end in reversed(ranges):
+        del lines[start:end]
+    return len(ranges)
+
+
+def _ingestion_workflow_path(repo_root: Path | None = None) -> Path:
+    return get_pack_root(repo_root) / "modules" / "common" / "cdf_ingestion" / "workflows" / "v1.WorkflowVersion.yaml"
+
+
+def _ingestion_config_path(repo_root: Path | None = None) -> Path:
+    return get_pack_root(repo_root) / "modules" / "common" / "cdf_ingestion" / "default.config.yaml"
+
+
+def diagram_annotation_stale_paths(repo_root: Path | None = None) -> list[Path]:
+    """Diagram-annotation paths that should have been removed but are still present."""
+    if not diagram_annotation_is_redundant(repo_root):
+        return []
+
+    stale: list[Path] = []
+    module_dir = get_sourcesystem_dir(repo_root) / _DIAGRAM_ANNOTATION_MODULE
+    for rel_path in _DIAGRAM_ANNOTATION_FILES:
+        f = module_dir / rel_path
+        if f.exists():
+            stale.append(f)
+
+    workflow_path = _ingestion_workflow_path(repo_root)
+    if workflow_path.exists():
+        text = workflow_path.read_text(encoding="utf-8")
+        if any(re.search(r"{{\s*" + var + r"\s*}}", text) for var in _INGESTION_DIAGRAM_ANNOTATION_TASK_VARS):
+            stale.append(workflow_path)
+
+    config_path = _ingestion_config_path(repo_root)
+    if config_path.exists():
+        text = config_path.read_text(encoding="utf-8")
+        if any(f"{var}:" in text for var in _INGESTION_DIAGRAM_ANNOTATION_TASK_VARS):
+            stale.append(config_path)
+
+    return stale
+
+
+def remove_redundant_diagram_annotation(repo_root: Path | None = None) -> list[Path]:
+    """Remove the synthetic diagram-annotation pipeline from this project's copy of
+    cdf_sharepoint_data_dump, and the 3 corresponding tasks/vars from cdf_ingestion,
+    but only when cdf_file_annotation (the real pipeline) is also installed.
+
+    No-op otherwise — the synthetic pipeline remains fully supported standalone, and
+    nothing is ever deleted from the library module itself. Idempotent.
+    """
+    removed: list[Path] = []
+    if not diagram_annotation_is_redundant(repo_root):
+        return removed
+
+    modules_root = get_pack_root(repo_root) / "modules"
+    module_dir = get_sourcesystem_dir(repo_root) / _DIAGRAM_ANNOTATION_MODULE
+    for rel_path in _DIAGRAM_ANNOTATION_FILES:
+        f = module_dir / rel_path
+        if f.exists():
+            f.unlink()
+            removed.append(f)
+            _ok(t("Removed redundant diagram-annotation file: {f}").format(f=f.relative_to(modules_root)))
+
+    workflow_path = _ingestion_workflow_path(repo_root)
+    if workflow_path.exists():
+        lines = workflow_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        task_count = _remove_ingestion_diagram_annotation_tasks(lines)
+        if task_count:
+            workflow_path.write_text("".join(lines), encoding="utf-8")
+            removed.append(workflow_path)
+            _ok(t("Removed {n} redundant diagram-annotation task(s) from cdf_ingestion workflow.").format(n=task_count))
+
+    config_path = _ingestion_config_path(repo_root)
+    if config_path.exists():
+        lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        changed = [_yaml_delete_key(lines, var) for var in _INGESTION_DIAGRAM_ANNOTATION_TASK_VARS]
+        if any(changed):
+            config_path.write_text("".join(lines), encoding="utf-8")
+            removed.append(config_path)
+
+    return removed
+
+
+# ── Data model auth patching ──────────────────────────────────────────────────
+
+
+def patch_cfihos_auth_for_missing_search(repo_root: Path | None = None) -> list[Path]:
+    """Remove ``{{search_space}}`` from cfihos auth files when the search module is absent.
+
+    The ``cfihos_oil_and_gas_extension`` auth files include ``{{search_space}}`` in
+    the ``dataModelsAcl`` scope.  When ``cfihos_oil_and_gas_extension_search`` is not
+    installed that variable is undefined, which causes Toolkit to fail.  This function
+    strips the offending list item from every auth YAML under the extension's auth/
+    directory when the search module directory does not exist.
+
+    Returns the list of files actually modified.
+    """
+    data_models_dir = get_data_models_dir(repo_root)
+    search_module = data_models_dir / "cfihos_oil_and_gas_extension_search"
+    cfihos_auth_dir = data_models_dir / "cfihos_oil_and_gas_extension" / "auth"
+
+    if search_module.is_dir():
+        return []  # search module present — {{search_space}} is valid, leave as-is
+    if not cfihos_auth_dir.is_dir():
+        return []  # cfihos extension not installed
+
+    patched: list[Path] = []
+    for auth_file in sorted(cfihos_auth_dir.glob("*.yaml")):
+        original = auth_file.read_text(encoding="utf-8")
+        # Remove any line that contains only the {{search_space}} list item.
+        new_lines = [line for line in original.splitlines(keepends=True) if "{{search_space}}" not in line]
+        if len(new_lines) < len(original.splitlines()):
+            auth_file.write_text("".join(new_lines), encoding="utf-8")
+            patched.append(auth_file)
+            rel_auth_file = auth_file.relative_to(data_models_dir.parent)
+            _ok(t("Removed {{search_space}} from: {auth_file}").format(auth_file=rel_auth_file))
+    return patched
+
+
+# ── CI/CD generation ───────────────────────────────────────────────────────────
+
+
+def _read_existing_values(
+    pack_root: Path,
+    envs: tuple[str, ...],
+    installed_ss: list[str],
+) -> dict:
+    """Read current values from existing config files to pre-fill prompts on re-run."""
+    existing: dict = {
+        "project_names": {},
+        "site": "",
+        "dataset": [],
+        "app_owner": "",
+        "integration_owners": {},
+        "data_owners": {},
+        "ingestion_instance_spaces": [],
+        "cfihos_admin_user": "",
+        "cfihos_integration_owner_name": "",
+        "cfihos_integration_owner_email": "",
+    }
+    for env in envs:
+        path = pack_root / f"config.{env}.yaml"
+        # For test, fall back to config.staging.yaml if migration hasn't run yet.
+        if not path.exists() and env == "test":
+            path = pack_root / "config.staging.yaml"
+        if not path.exists():
+            continue
+        cfg = load_yaml(path)
+        proj = cfg.get("environment", {}).get("project", "")
+        if proj:
+            existing["project_names"][env] = proj
+        modules = cfg.get("variables", {}).get("modules", {})
+        # Support both flat (new) and nested-category (old) structures.
+        foundation = (
+            modules.get("cdf_project_foundation") or (modules.get("common") or {}).get("cdf_project_foundation") or {}
+        )
+        if foundation.get("site"):
+            existing["site"] = foundation["site"]
+        # Collect dataset values from installed sourcesystem module sections.
+        # Supports both flat (new) and nested-category (old) config structures.
+        ss_section = modules.get("sourcesystem") or modules
+        ss_datasets: list[str] = []
+        for module in installed_ss:
+            mod_vars = ss_section.get(module, {}) if isinstance(ss_section, dict) else {}
+            ds = mod_vars.get("dataset", "")
+            if ds and isinstance(ds, str) and ds not in ss_datasets:
+                ss_datasets.append(ds)
+        # cdf_ingestion (Demo pack only) has its own dataset, scoped by the
+        # workflow.Group.yaml auth that remove_redundant_auth_files() deletes once
+        # cdf_project_foundation's persona groups take over — fold it into the persona
+        # dataset list too, or the producer group loses that access entirely.
+        if (pack_root / "modules" / "common" / "cdf_ingestion").is_dir():
+            ingestion_vars = modules.get("cdf_ingestion") or (modules.get("common") or {}).get("cdf_ingestion") or {}
+            ingestion_dataset = ingestion_vars.get("dataset", "ingestion")
+            if ingestion_dataset and isinstance(ingestion_dataset, str) and ingestion_dataset not in ss_datasets:
+                ss_datasets.append(ingestion_dataset)
+            ingestion_spaces = ingestion_vars.get("instanceSpaces")
+            if isinstance(ingestion_spaces, list):
+                existing["ingestion_instance_spaces"] = [sp for sp in ingestion_spaces if isinstance(sp, str)]
+        # Persona-group scope lives on cdf_project_foundation.dataset. Extractor
+        # ids are recomputed from the installed modules; anything else on this
+        # list (a data set the user added, or one folded in by an earlier run)
+        # must be carried forward or the overlay silently revokes that access.
+        foundation_datasets = foundation.get("dataset") or []
+        if not isinstance(foundation_datasets, list):
+            foundation_datasets = []
+        for ds in foundation_datasets:
+            if ds and isinstance(ds, str) and ds not in ss_datasets:
+                ss_datasets.append(ds)
+        if ss_datasets:
+            existing["dataset"] = ss_datasets
+        app_owner = (
+            modules.get("cdf_file_annotation") or modules.get("contextualization", {}).get("cdf_file_annotation", {})
+        ).get("ApplicationOwner", "")
+        if app_owner and app_owner != "<APPLICATION_OWNER>":
+            existing["app_owner"] = app_owner
+        # CFIHOS DM owner fields (flat or nested datamodels category).
+        cfihos_dm = (
+            modules.get("cfihos_oil_and_gas_extension")
+            or modules.get("datamodels", {}).get("cfihos_oil_and_gas_extension", {})
+            or {}
+        )
+        _placeholder_emails = {"admin.user@firm.com", "integration.owner@firm.com"}
+        if cfihos_dm.get("admin_user") and cfihos_dm["admin_user"] not in _placeholder_emails:
+            existing["cfihos_admin_user"] = cfihos_dm["admin_user"]
+        if cfihos_dm.get("integrationOwnerName") and cfihos_dm["integrationOwnerName"] != "Integration Owner":
+            existing["cfihos_integration_owner_name"] = cfihos_dm["integrationOwnerName"]
+        if cfihos_dm.get("integrationOwnerEmail") and cfihos_dm["integrationOwnerEmail"] not in _placeholder_emails:
+            existing["cfihos_integration_owner_email"] = cfihos_dm["integrationOwnerEmail"]
+        # Support both flat and nested-category structures.
+        ss = modules if not modules.get("sourcesystem") else modules.get("sourcesystem", {})
+        for module in installed_ss:
+            mv = ss.get(module, {})
+            if mv.get("integration_owner_name") or mv.get("integration_owner_email"):
+                existing["integration_owners"][module] = (
+                    mv.get("integration_owner_name", ""),
+                    mv.get("integration_owner_email", ""),
+                )
+            if mv.get("data_owner_name") or mv.get("data_owner_email"):
+                existing["data_owners"][module] = (
+                    mv.get("data_owner_name", ""),
+                    mv.get("data_owner_email", ""),
+                )
+    return existing
+
+
+def _prompt_owner(
+    label: str,
+    default_name: str = "",
+    default_email: str = "",
+) -> tuple[str, str]:
+    """Prompt for an owner's name and a validated email. Both are optional (blank skips)."""
+    name = prompt(t("{label} name").format(label=label), default=default_name or None).strip()
+    while True:
+        email = prompt(t("{label} email").format(label=label), default=default_email or None).strip()
+        if not email or re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            return name, email
+        _warn(t("Invalid email. Use format: name@domain.com"))
+
+
+def _warn_if_no_email(label: str, email: str) -> None:
+    """Blank email means sendNotification is written as false for this contact —
+    surface that now, not as a silent gap discovered during an incident."""
+    if not email:
+        _warn(
+            t("No email set for {label} — pipeline notifications will be disabled (sendNotification: false).").format(
+                label=label
+            )
+        )
+
+
+def _all_same(owners: dict[str, tuple[str, str]]) -> bool:
+    """Return True if all modules share the same owner (name, email) pair."""
+    vals = list(owners.values())
+    return bool(vals) and all(v == vals[0] for v in vals)
+
+
+def _prompt_source_system_ownership(
+    installed_ss: list[str],
+    existing_integration: dict[str, tuple[str, str]] | None = None,
+    existing_data: dict[str, tuple[str, str]] | None = None,
+) -> tuple[dict[str, tuple[str, str]], dict[str, tuple[str, str]]]:
+    """Prompt for integration and data owner details for installed source systems.
+
+    Pre-fills prompts from *existing_integration* / *existing_data* on re-runs.
+    Returns (integration_owners, data_owners) — each a dict of module → (name, email).
+    """
+    if not installed_ss:
+        return {}, {}
+
+    ei = existing_integration or {}
+    ed = existing_data or {}
+
+    _section(t("Source System Ownership"))
+    _hint(t("Installed: {modules}").format(modules=", ".join(_module_label(m) for m in installed_ss)))
+
+    # ── Integration owner ─────────────────────────────────────────────────────
+    print()
+    integration_owners: dict[str, tuple[str, str]] = {}
+    shared_int_default = _all_same(ei) if ei else True
+    if prompt_yes_no(t("Same integration owner for all source systems?"), default=shared_int_default):
+        first = next(iter(ei.values()), ("", "")) if ei else ("", "")
+        name, email = _prompt_owner(f"  {t('Integration owner')}", *first)
+        _warn_if_no_email(t("Integration owner").lower(), email)
+        for m in installed_ss:
+            integration_owners[m] = (name, email)
+    else:
+        for m in installed_ss:
+            print(f"\n  {_module_label(m)}")
+            dn, de = ei.get(m, ("", ""))
+            name, email = _prompt_owner(f"    {t('Integration owner')}", dn, de)
+            _warn_if_no_email(f"{t('Integration owner').lower()} ({_module_label(m)})", email)
+            integration_owners[m] = (name, email)
+
+    # ── Data owner ────────────────────────────────────────────────────────────
+    print()
+    data_owners: dict[str, tuple[str, str]] = {}
+    shared_data_default = _all_same(ed) if ed else True
+    if prompt_yes_no(t("Same data owner for all source systems?"), default=shared_data_default):
+        first = next(iter(ed.values()), ("", "")) if ed else ("", "")
+        name, email = _prompt_owner(f"  {t('Data owner')}", *first)
+        _warn_if_no_email(t("Data owner").lower(), email)
+        for m in installed_ss:
+            data_owners[m] = (name, email)
+    else:
+        for m in installed_ss:
+            print(f"\n  {_module_label(m)}")
+            dn, de = ed.get(m, ("", ""))
+            name, email = _prompt_owner(f"    {t('Data owner')}", dn, de)
+            _warn_if_no_email(f"{t('Data owner').lower()} ({_module_label(m)})", email)
+            data_owners[m] = (name, email)
+
+    return integration_owners, data_owners
+
+
+def _cleanup_file_annotation_module(repo_root: Path | None = None) -> None:
+    """Remove developer-facing files from cdf_file_annotation that are not needed
+    in production deployments (CONTRIBUTING.md, DEPLOYMENT.md, detailed_guides/).
+    Runs silently — not reported in the wizard summary.
+    """
+    ctx_dir = get_contextualization_dir(repo_root)
+    fa_dir = ctx_dir / "cdf_file_annotation"
+    if not fa_dir.is_dir():
+        return
+    for name in ("CONTRIBUTING.md", "DEPLOYMENT.md"):
+        f = fa_dir / name
+        if f.exists():
+            f.unlink()
+    guides = fa_dir / "detailed_guides"
+    if guides.is_dir():
+        shutil.rmtree(guides)
+
+
+def _run_cicd_wizard(pack_root: Path) -> list[Path]:
+    """Run the CI/CD generation step.  Returns the list of files written (empty if skipped)."""
+    _section(t("CI/CD Pipeline Generation"))
+    if not prompt_yes_no(t("Generate GitHub Actions workflows for this project?"), default=False):
+        return []
+
+    generate_script = Path(__file__).parent / "generate_actions.py"
+    if not generate_script.exists():
+        _warn(
+            t("Could not find generate_actions.py at {generate_script} — skipping.").format(
+                generate_script=generate_script
+            )
+        )
+        return []
+
+    cmd = [sys.executable, str(generate_script), "--force"]
+    from _style import _C
+
+    print(f"\n  {_C.DIM}{t('Running: {cmd}').format(cmd=' '.join(cmd))}{_C.RESET}")
+    # Output is parsed below by prefix match ("Wrote "/"Skipped ") — force English
+    # regardless of the caller's locale so that parsing stays stable.
+    env = {**os.environ, "CDF_LOCALE": "en"}
+    result = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, env=env)
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+
+    written: list[Path] = []
+    for line in result.stdout.splitlines():
+        if line.startswith("Wrote "):
+            written.append(Path(line[6:].strip()))
+
+    if result.returncode == 0:
+        _ok(t("CI/CD workflows generated.  See docs/FOUNDATION_CICD.md for next steps."))
+    else:
+        _warn(t("CI/CD generation failed — fix the issue below, then re-run: {cmd}").format(cmd=" ".join(cmd)))
+        for line in result.stderr.splitlines():
+            _hint(f"  {line}")
+
+    return written
+
+
+# ── Main wizard ────────────────────────────────────────────────────────────────
+
+
+def _detect_installed_envs(pack_root: Path) -> tuple[str, ...]:
+    """Return the environments that already have a config file in pack_root.
+
+    ``config.staging.yaml`` is treated as the test environment (Toolkit uses
+    'staging' as the name; the Foundation DP normalises it to 'test').
+    """
+    detected: list[str] = []
+    for env in ENVIRONMENTS:
+        if (pack_root / f"config.{env}.yaml").exists() or (
+            env == "test" and (pack_root / "config.staging.yaml").exists()
+        ):
+            detected.append(env)
+    return tuple(detected)
+
+
+_PACK_KIND_TITLE: dict[str, str] = {
+    "foundation": "Foundation Deployment Pack",
+    "demo": "Foundation Deployment Pack Demo",
+}
+
+
+def _print_wizard_header(
+    variant: str,
+    pack_root: Path,
+    installed_ctx: list[str],
+    pack_kind: Literal["foundation", "demo"],
+) -> None:
+    _banner(t("{pack_title} — Project Setup").format(pack_title=_PACK_KIND_TITLE[pack_kind]))
+    _ok(t("Deployment pack    : {pack_kind}").format(pack_kind=pack_kind))
+    _ok(t("Data model variant : {variant}").format(variant=variant))
+    _ok(t("Pack root          : {pack_root}").format(pack_root=pack_root))
+    org_dir = get_org_dir_name()
+    if org_dir:
+        _ok(t("Organization dir   : {org_dir}  (from cdf.toml)").format(org_dir=org_dir))
+    else:
+        _hint(t("No organization directory set in cdf.toml — config files written to repo root."))
+    if installed_ctx:
+        _ok(t("Contextualization  : {list}").format(list=", ".join(installed_ctx)))
+    else:
+        _hint(t("No contextualization modules detected."))
+
+
+def _include_prompt(env: str) -> str:
+    text = t("Include '{env}'?").format(env=env)
+    return f"  {text}"
+
+
+def _include_environment_prompt(env: str) -> str:
+    text = t("Include environment '{env}'?").format(env=env)
+    return f"  {text}"
+
+
+def _prompt_environments(pack_root: Path) -> tuple[str, ...]:
+    _section(t("Environment Selection"))
+    installed_envs = _detect_installed_envs(pack_root)
+
+    if installed_envs:
+        env_list = ", ".join(installed_envs)
+        _hint(t("You selected {env_list} while installing the DP.").format(env_list=env_list))
+        _hint(t("(staging = test; dev/prod/test are the three supported environments.)"))
+        print()
+        continue_prompt = f"  {t('Continue with current selection ({env_list})?').format(env_list=env_list)}"
+        if prompt_yes_no(continue_prompt, default=True):
+            return installed_envs
+        _hint(t("Select which environments to set up:"))
+        selected = tuple(
+            env for env in ENVIRONMENTS if prompt_yes_no(_include_prompt(env), default=(env in installed_envs))
+        )
+        if not selected:
+            raise SystemExit(t("No environments selected — nothing to do."))
+        return selected
+
+    which_envs = t("Which environments would you like to set up?")
+    print(f"  {which_envs}\n")
+    choice = prompt_choice(
+        [
+            t("All three — dev, test, prod  (recommended)"),
+            t("dev only"),
+            t("dev + prod  (skip test / staging)"),
+            t("Custom — choose individually"),
+        ],
+        default=1,
+    )
+    if choice == 1:
+        return ("dev", "test", "prod")
+    if choice == 2:
+        return ("dev",)
+    if choice == 3:
+        return ("dev", "prod")
+    selected = tuple(env for env in ENVIRONMENTS if prompt_yes_no(_include_environment_prompt(env), default=True))
+    if not selected:
+        raise SystemExit(t("No environments selected — nothing to do."))
+    return selected
+
+
+def _prompt_project_names(
+    selected_envs: tuple[str, ...],
+    existing_project_names: dict[str, str],
+) -> dict[str, str]:
+    _section(t("CDF Project Names"))
+    _hint(t("Format: <enterprise>-<env>  e.g. acme-dev, acme-test, acme-prod"))
+    _hint(t("Only lowercase letters, digits, and hyphens. Cannot be empty."))
+    project_names: dict[str, str] = {}
+    for env in selected_envs:
+        while True:
+            val = prompt(
+                t("Project name for {env}").format(env=env),
+                default=existing_project_names.get(env) or None,
+            ).strip()
+            if not val:
+                _warn(t("Project name cannot be empty."))
+                continue
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]*[a-z0-9]", val):
+                _warn(t("Use only lowercase letters, digits, and hyphens (e.g. acme-dev)."))
+                continue
+            project_names[env] = val
+            break
+    return project_names
+
+
+def _prompt_site(existing_site: str) -> str:
+    _section(t("Site / Location Name"))
+    _hint(t("Required. Used in access-group names (<persona>_<site>_all_<env>),"))
+    _hint(t("location for source system external IDs."))
+    _hint(t("Only lowercase letters, digits, and underscores (e.g. oslo)."))
+    while True:
+        site = prompt(t("Site / location name"), default=existing_site or None).strip().lower()
+        if not site:
+            _warn(t("Site / location name is required and cannot be empty."))
+            continue
+        if re.fullmatch(r"[a-z0-9_]+", site):
+            return site
+        _warn(t("Use only lowercase letters, digits, and underscores — hyphens are not allowed in CDF external IDs."))
+
+
+def _prompt_cfihos_owners(existing: dict) -> tuple[str, str, str]:
+    """Prompt for CFIHOS data-model owner fields. Returns admin user and owner name/email."""
+    _section(t("CFIHOS Data Model — Data Model Owner Configuration"))
+    _hint(t("Configures admin_user, integrationOwnerName, and integrationOwnerEmail"))
+    _hint(t("in the cfihos_oil_and_gas_extension module. Leave blank to skip."))
+
+    while True:
+        cfihos_admin_user = prompt(
+            t("Admin user email"),
+            default=existing.get("cfihos_admin_user") or None,
+        ).strip()
+        if not cfihos_admin_user or re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", cfihos_admin_user):
+            break
+        _warn(t("Invalid email. Use format: name@domain.com"))
+
+    cfihos_integration_owner_name = prompt(
+        t("Data Model owner name"),
+        default=existing.get("cfihos_integration_owner_name") or None,
+    ).strip()
+
+    while True:
+        cfihos_integration_owner_email = prompt(
+            t("Data Model owner email"),
+            default=existing.get("cfihos_integration_owner_email") or None,
+        ).strip()
+        if not cfihos_integration_owner_email or re.fullmatch(
+            r"[^@\s]+@[^@\s]+\.[^@\s]+", cfihos_integration_owner_email
+        ):
+            break
+        _warn(t("Invalid email. Use format: name@domain.com"))
+
+    return cfihos_admin_user, cfihos_integration_owner_name, cfihos_integration_owner_email
+
+
+def _prompt_group_source_ids(
+    site: str,
+    installed_ss: list[str],
+    repo_root: Path | None,
+) -> tuple[Path, list[str], dict[str, str], dict[str, int], dict[str, str]]:
+    """Prompt for persona and extractor group source IDs. Returns .env file state."""
+    _section(t("Group Source IDs  (Entra ID object IDs)"))
+    _hint(t("The source ID is the group's object ID in your identity provider (e.g. Entra ID)."))
+    _hint(t("See: https://docs.cognite.com/cdf/access/entra/guides/create_groups_oidc"))
+    _hint(t("Values stored in .env — leave blank to fill manually later."))
+    env_path = (repo_root or REPO_ROOT) / ".env"
+    env_lines, env_vals, env_key_idx = parse_env_file(env_path)
+    original_env_vals = dict(env_vals)
+
+    for persona in PERSONAS:
+        var = f"{persona.upper()}_SOURCE_ID"
+        print(f"\n  {t('{persona} persona group  →  {var}').format(persona=persona.capitalize(), var=var)}")
+        _hint(t("  Source ID of the '{group}' group in your IdP.").format(group=group_name(persona, site, "dev")))
+        prompt_env_var(var, env_vals, env_lines, env_key_idx)
+
+    if installed_ss:
+        _section(t("Extractor Group Source IDs  (per source system)"))
+        _hint(t("One scoped producer group per extractor — write access limited to its"))
+        _hint(t("dataset, instance space, and RAW tables only (SOP Step 3c)."))
+        _hint(t("See: https://docs.cognite.com/cdf/access/entra/guides/create_groups_oidc"))
+        for module in installed_ss:
+            var = _MODULE_EXTRACTOR_ENV_VAR.get(module, "")
+            if not var:
+                continue
+            print(f"\n  {_module_label(module)}  →  {var}")
+            prompt_env_var(var, env_vals, env_lines, env_key_idx)
+
+    return env_path, env_lines, env_vals, env_key_idx, original_env_vals
+
+
+def _prompt_app_owner(installed_ctx: list[str], existing_app_owner: str) -> str:
+    if "cdf_file_annotation" not in installed_ctx:
+        return ""
+    _section(t("Streamlit Application Owner  (file annotation)"))
+    _hint(t("Email address(es) of the Streamlit app owner for cdf_file_annotation."))
+    _hint(t("Separate multiple addresses with a comma."))
+    while True:
+        app_owner = prompt(
+            t("Application owner email(s)"),
+            default=existing_app_owner or None,
+        ).strip()
+        if not app_owner:
+            return ""
+        emails = [e.strip() for e in app_owner.split(",") if e.strip()]
+        if all(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", e) for e in emails):
+            return app_owner
+        _warn(t("One or more addresses look invalid. Use format: name@domain.com"))
+
+
+def _prompt_synthetic_data() -> bool:
+    _section(t("Synthetic / Example Data"))
+    _hint(t("Data model modules contain synthetic data, example files, and diagram images"))
+    _hint(t("that are not needed in production deployments."))
+    return prompt_yes_no(t("Keep synthetic data, example files, and diagram images?"), default=False)
+
+
+def _prompt_pack_kind() -> Literal["foundation", "demo"]:
+    """Ask which pack this project is set up for when auto-detection is ambiguous
+    (both extractor and data-dump sourcesystem modules installed, or neither)."""
+    _section(t("Deployment Pack"))
+    _hint(t("Could not determine from the installed sourcesystem modules whether this"))
+    _hint(t("project is set up for the Foundation pack or the Demo pack."))
+    choice = prompt_choice(
+        [
+            t("Foundation project (no synthetic data)"),
+            t("Demo project with synthetic data (recreated transformations and workflows)"),
+        ],
+        default=1,
+    )
+    return "foundation" if choice == 1 else "demo"
+
+
+# Modules to install for a from-scratch Demo pack setup: cdf_ingestion orchestrates the
+# transformations shipped by the data-dump modules, so it's listed first.
+_DEMO_SOURCE_SYSTEM_INSTALL_MODULES: tuple[str, ...] = (
+    "cdf_ingestion",
+    *DEMO_SOURCE_SYSTEM_MODULE_DIRS,
+)
+
+
+def _exit_if_demo_has_no_source_system_modules(
+    pack_kind: Literal["foundation", "demo"],
+    installed_ss: list[str],
+    repo_root: Path | None,
+) -> None:
+    """Demo pack setup needs the synthetic data-dump modules and cdf_ingestion to
+    populate the data model — if the project has neither those nor any extractor
+    modules installed yet, stop and tell the user what to add instead of continuing
+    with an empty source-system config."""
+    if pack_kind != "demo" or installed_ss:
+        return
+    sourcesystem_dir = get_sourcesystem_dir(repo_root)
+    if any((sourcesystem_dir / name).is_dir() for name in DEMO_SOURCE_SYSTEM_MODULE_DIRS):
+        return
+
+    _section(t("Demo Pack — Source System Modules Required"))
+    _hint(t("No extractor or data-dump modules are installed yet. The Demo pack needs the"))
+    _hint(t("synthetic data-dump modules and cdf_ingestion to populate the data model."))
+    print()
+    _hint(t("Add them using below commands, then re-run the setup_project.py script:"))
+    print()
+    for module in _DEMO_SOURCE_SYSTEM_INSTALL_MODULES:
+        print(f"  cdf modules add -d {module}")
+    print()
+    sys.exit(0)
+
+
+def _env_values_dirty(
+    env_vals: dict[str, str],
+    original_env_vals: dict[str, str],
+) -> bool:
+    extractor_dirty = any(env_vals.get(v) != original_env_vals.get(v) for v in _MODULE_EXTRACTOR_ENV_VAR.values())
+    return extractor_dirty or any(
+        env_vals.get(f"{p.upper()}_SOURCE_ID") != original_env_vals.get(f"{p.upper()}_SOURCE_ID") for p in PERSONAS
+    )
+
+
+def _show_wizard_review(
+    targets: dict[str, Path],
+    project_names: dict[str, str],
+    env_dirty: bool,
+) -> None:
+    _section(t("Review"))
+    for env, path in targets.items():
+        state = "create" if not path.exists() else "update"
+        line = t("[{state}] {path.name}  —  project: {project_name}").format(
+            state=state, path=path, project_name=project_names[env]
+        )
+        _ok(line)
+    if env_dirty:
+        _ok(t(".env  —  group source IDs updated"))
+
+
+def _confirm_wizard_apply(args_yes: bool) -> None:
+    print()
+    if not args_yes and not prompt_yes_no(t("Apply these changes?"), default=True):
+        print(f"  {t('Aborted — no changes written.')}")
+        sys.exit(0)
+
+
+def _write_wizard_configs(
+    targets: dict[str, Path],
+    project_names: dict[str, str],
+    *,
+    variant: str,
+    site: str,
+    installed_ctx: list[str],
+    installed_ss: list[str],
+    app_owner: str,
+    integration_owners: dict[str, tuple[str, str]],
+    data_owners: dict[str, tuple[str, str]],
+    existing: dict,
+    cfihos_admin_user: str,
+    cfihos_integration_owner_name: str,
+    cfihos_integration_owner_email: str,
+    repo_root: Path | None,
+) -> int:
+    _section(t("Writing Config Files"))
+    changed_count = 0
+    for env, path in targets.items():
+        overlay = build_overlay(
+            variant,
+            env,
+            site,
+            installed_ctx,
+            app_owner,
+            integration_owners,
+            data_owners,
+            datasets=existing["dataset"],
+            cfihos_admin_user=cfihos_admin_user,
+            cfihos_integration_owner_name=cfihos_integration_owner_name,
+            cfihos_integration_owner_email=cfihos_integration_owner_email,
+            extractor_group_source_ids={
+                m: _MODULE_EXTRACTOR_ENV_VAR[m] for m in installed_ss if m in _MODULE_EXTRACTOR_ENV_VAR
+            },
+            repo_root=repo_root,
+            previous_site=existing["site"],
+            ingestion_instance_spaces=existing["ingestion_instance_spaces"],
+        )
+        if write_config(path, env, project_names[env], overlay):
+            changed_count += 1
+        else:
+            _hint(t("No change: {path.name}").format(path=path))
+    return changed_count
+
+
+def _write_env_if_dirty(
+    env_path: Path,
+    env_lines: list[str],
+    env_dirty: bool,
+) -> None:
+    if not env_dirty or not env_lines:
+        return
+    _section(t("Writing .env"))
+    if env_path.exists():
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        backup_env = env_path.with_suffix(f".{timestamp}.bak")
+        shutil.copy2(env_path, backup_env)
+        _ok(t("Updated .env  (backup: {backup_env.name})").format(backup_env=backup_env))
+    else:
+        _ok(t("Created .env"))
+    env_path.write_text("".join(env_lines), encoding="utf-8")
+
+
+def _finalize_wizard(
+    pack_root: Path,
+    selected_envs: tuple[str, ...],
+    *,
+    variant: str,
+    site: str,
+    pack_kind: Literal["foundation", "demo"],
+    keep_synthetic: bool,
+    env_dirty: bool,
+    changed_count: int,
+    repo_root: Path | None,
+) -> None:
+    if "test" in selected_envs:
+        _migrate_staging_to_test(pack_root)
+    else:
+        staging_path = pack_root / "config.staging.yaml"
+        if staging_path.exists():
+            staging_path.unlink()
+            _ok(t("Deleted  config.staging.yaml  (test not in selected environments)"))
+
+    for env in ENVIRONMENTS:
+        if env not in selected_envs:
+            path = pack_root / f"config.{env}.yaml"
+            if path.exists():
+                path.unlink()
+                _ok(t("Deleted  {path.name}  (not in selected environments)").format(path=path))
+
+    removed = remove_redundant_auth_files(repo_root)
+    patched = patch_cfihos_auth_for_missing_search(repo_root)
+    created_cdm_space = restore_cdm_space_file(variant, repo_root)
+    _cleanup_file_annotation_module(repo_root)
+    diagram_annotation_removed = remove_redundant_diagram_annotation(repo_root)
+
+    synthetic_removed = 0
+    if not keep_synthetic:
+        synthetic_removed = remove_synthetic_data(variant, repo_root)
+        if synthetic_removed:
+            _ok(t("Removed {n} synthetic data file(s) from upload_data/ directories.").format(n=synthetic_removed))
+
+    patched_manifests = patch_data_dump_upload_data_spaces(variant, site, repo_root)
+
+    cicd_files = _run_cicd_wizard(pack_root) if pack_kind == "foundation" else []
+
+    _section(t("Done"))
+    _ok(t("{n} config file(s) created/updated.").format(n=changed_count))
+    if removed:
+        _ok(t("{n} redundant auth file(s) removed.").format(n=len(removed)))
+    if patched:
+        _ok(t("{n} cfihos auth file(s) patched (search_space removed).").format(n=len(patched)))
+    if created_cdm_space:
+        _ok(t("CDM instance space file created (no data model extension installed)."))
+    if env_dirty:
+        _ok(t(".env updated with group source IDs."))
+    if synthetic_removed:
+        _ok(t("{n} synthetic data file(s) removed.").format(n=synthetic_removed))
+    if patched_manifests:
+        _ok(
+            t(
+                "{n} upload_data file(s) patched with the current instance space "
+                "(edited in place — re-run the wizard after updating a module)."
+            ).format(n=len(patched_manifests))
+        )
+    if diagram_annotation_removed:
+        _ok(
+            t("{n} redundant diagram-annotation file(s) removed (cdf_file_annotation is installed).").format(
+                n=len(diagram_annotation_removed)
+            )
+        )
+    if cicd_files:
+        _ok(t("{n} CI/CD workflow file(s) generated.").format(n=len(cicd_files)))
+    print()
+    _hint(t("Next steps:"))
+    _hint(t("  1. Verify group source IDs in .env match your Entra ID object IDs."))
+    _hint(t("  2. Confirm environment.project names in each config.<env>.yaml file."))
+    if cicd_files:
+        _hint(t("  3. Create GitHub Environments: dev-toolkit-credentials,"))
+        _hint(t("     test-toolkit-credentials, prod-toolkit-credentials"))
+        _hint(t("     (see docs/FOUNDATION_CICD.md for variable and secret details)."))
+        _hint(t("  4. Add IDP_CLIENT_SECRET to each GitHub Environment."))
+        _hint(t("  5. Create and protect branches dev and main;"))
+        _hint(t("     open a PR to dev to validate dry-run.yml."))
+    elif pack_kind == "foundation":
+        _hint(t("  3. Add CI/CD secrets to GitHub Environments (IDP_CLIENT_SECRET)."))
+    print()
+
+
+def _run_wizard(
+    args_variant: str | None,
+    args_yes: bool,
+    repo_root: Path | None = None,
+) -> None:
+    pack_root = get_pack_root(repo_root)
+    variant = resolve_variant(args_variant, get_data_models_dir(repo_root))
+    pack_kind = resolve_pack_kind(variant, get_sourcesystem_dir(repo_root))
+    installed_ctx = list_installed_contextualization_modules(repo_root)
+    installed_ss = list_installed_source_system_modules(repo_root)
+    _exit_if_demo_has_no_source_system_modules(pack_kind, installed_ss, repo_root)
+
+    _print_wizard_header(variant, pack_root, installed_ctx, pack_kind)
+
+    selected_envs = _prompt_environments(pack_root)
+    existing = _read_existing_values(pack_root, selected_envs, installed_ss)
+    targets = target_config_paths(pack_root, selected_envs)
+
+    project_names = _prompt_project_names(selected_envs, existing["project_names"])
+    site = _prompt_site(existing["site"])
+
+    integration_owners, data_owners = _prompt_source_system_ownership(
+        installed_ss,
+        existing_integration=existing["integration_owners"] or None,
+        existing_data=existing["data_owners"] or None,
+    )
+
+    cfihos_admin_user = ""
+    cfihos_integration_owner_name = ""
+    cfihos_integration_owner_email = ""
+    if variant == "cfihos_oil_and_gas_extension":
+        cfihos_admin_user, cfihos_integration_owner_name, cfihos_integration_owner_email = _prompt_cfihos_owners(
+            existing
+        )
+
+    env_path, env_lines, env_vals, _env_key_idx, original_env_vals = _prompt_group_source_ids(
+        site, installed_ss, repo_root
+    )
+    app_owner = _prompt_app_owner(installed_ctx, existing["app_owner"])
+    # No data model extension installed under "cdm" — nothing for remove_synthetic_data
+    # to clean up. Demo pack needs its synthetic data to function — always keep it,
+    # no need to ask.
+    keep_synthetic = True if variant == "cdm" or pack_kind == "demo" else _prompt_synthetic_data()
+
+    env_dirty = _env_values_dirty(env_vals, original_env_vals)
+    _show_wizard_review(targets, project_names, env_dirty)
+    _confirm_wizard_apply(args_yes)
+
+    changed_count = _write_wizard_configs(
+        targets,
+        project_names,
+        variant=variant,
+        site=site,
+        installed_ctx=installed_ctx,
+        installed_ss=installed_ss,
+        app_owner=app_owner,
+        integration_owners=integration_owners,
+        data_owners=data_owners,
+        existing=existing,
+        cfihos_admin_user=cfihos_admin_user,
+        cfihos_integration_owner_name=cfihos_integration_owner_name,
+        cfihos_integration_owner_email=cfihos_integration_owner_email,
+        repo_root=repo_root,
+    )
+    _write_env_if_dirty(env_path, env_lines, env_dirty)
+    _finalize_wizard(
+        pack_root,
+        selected_envs,
+        variant=variant,
+        site=site,
+        pack_kind=pack_kind,
+        keep_synthetic=keep_synthetic,
+        env_dirty=env_dirty,
+        changed_count=changed_count,
+        repo_root=repo_root,
+    )
+
+
+# ── --check mode (CI) ──────────────────────────────────────────────────────────
+
+
+def collect_expected(
+    variant: str,
+    env: str,
+    site: str,
+    installed_ctx: list[str],
+    datasets: list[str] | None = None,
+) -> dict[str, object]:
+    overlay = build_overlay(variant, env, site, installed_ctx, datasets=datasets)
+    modules = overlay["variables"]["modules"]
+    expected: dict[str, object] = {}
+    for module, mod_vars in modules.items():
+        if isinstance(mod_vars, dict):
+            for key, value in mod_vars.items():
+                expected[f"{module}.{key}"] = value
+    return expected
+
+
+def get_actual_value(config: dict, dotted: str) -> object:
+    """Read a value using the nested-category structure ``modules.<category>.<module>.<key>``.
+
+    The canonical config structure groups modules under their category
+    (e.g. ``modules.common.cdf_project_foundation.site``).
+    ``_MODULE_CATEGORY_FALLBACK`` supplies the category for each module name.
+    """
+    parts = dotted.split(".")
+    if not parts:
+        return None
+    category = _MODULE_CATEGORY_FALLBACK.get(parts[0])
+    node: object = config.get("variables", {}).get("modules", {})
+    for part in [category, *parts] if category else parts:
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def diff_config(config: dict[str, object], expected: dict[str, object]) -> list[str]:
+    """Compare actual config values against the expected variant defaults.
+
+    Any mismatch here (including a version bump on an extended module) is reported
+    as a warning by the caller, never a hard failure — foundation DP is a base that
+    projects are expected to extend and evolve past, so a value diverging from the
+    base template is not necessarily a mistake.
+
+    Args:
+        config: the actual parsed config file contents.
+        expected: dotted-path -> expected value, from ``collect_expected``.
+
+    Returns:
+        human-readable mismatch descriptions; empty if ``config`` matches ``expected``.
+    """
+    if not isinstance(config, dict):
+        return ["    (invalid config file format — expected a dictionary)"]
+    errors: list[str] = []
+    for dotted, expected_value in expected.items():
+        actual = get_actual_value(config, dotted)
+        if actual != expected_value:
+            errors.append(f"    {dotted}: got {actual!r}, expected {expected_value!r}")
+    return errors
+
+
+def check_config_file(
+    path: Path,
+    variant: str,
+    env: str,
+    site: str,
+    installed_ctx: list[str],
+    datasets: list[str] | None = None,
+) -> list[str]:
+    if not path.exists():
+        return ["    (file missing — run without --check to create it)"]
+    config = load_yaml(path)
+    expected = collect_expected(variant, env, site, installed_ctx, datasets)
+    return diff_config(config, expected)
+
+
+def _read_check_context(pack_root: Path) -> tuple[str, list[str]]:
+    """Read site and dataset values from the first existing config file for --check mode.
+
+    Returns (site, datasets).  Both are needed to build correct expected values
+    so user-configured fields (group names, location, dataset list) don't produce
+    false positives.
+    """
+    for env in ENVIRONMENTS:
+        path = pack_root / f"config.{env}.yaml"
+        if not path.exists():
+            continue
+        cfg = load_yaml(path)
+        modules = cfg.get("variables", {}).get("modules", {})
+        # Support nested (canonical) and flat structures.
+        foundation = modules.get("common", {}).get("cdf_project_foundation", {}) or modules.get(
+            "cdf_project_foundation", {}
+        )
+        site = foundation.get("site", "")
+        datasets = foundation.get("dataset") or []
+        if not isinstance(datasets, list):
+            datasets = []
+        return site, datasets
+    return "", []
+
+
+def _warn_disabled_notifications(repo_root: Path | None, pack_root: Path) -> None:
+    """Non-fatal heads-up: any installed extractor with no owner email configured has
+    sendNotification disabled for that contact. Surfaced in --check, not just the
+    interactive wizard, so a silently-disabled alert doesn't only surface at build time."""
+    installed_ss = list_installed_source_system_modules(repo_root)
+    if not installed_ss:
+        return
+
+    for env in ENVIRONMENTS:
+        path = pack_root / f"config.{env}.yaml"
+        if not path.exists():
+            continue
+        config = load_yaml(path)
+        if not isinstance(config, dict):
+            continue
+
+        modules_cfg = config.get("variables", {}).get("modules", {})
+        if not isinstance(modules_cfg, dict):
+            modules_cfg = {}
+
+        disabled: list[str] = []
+        for module in installed_ss:
+            label = _module_label(module)
+            # Config may be flat (variables.modules.<module>.*, the current default)
+            # or nested under the legacy category (variables.modules.sourcesystem.<module>.*).
+            category = _MODULE_CATEGORY_FALLBACK.get(module)
+            mod_cfg = modules_cfg.get(module) or (modules_cfg.get(category, {}).get(module) if category else None) or {}
+            if not isinstance(mod_cfg, dict):
+                mod_cfg = {}
+            if not mod_cfg.get("integration_owner_email"):
+                disabled.append(f"{label}: integration owner")
+            if not mod_cfg.get("data_owner_email"):
+                disabled.append(f"{label}: data owner")
+
+        if disabled:
+            print(
+                t("WARNING: sendNotification disabled (no email configured) in config.{env}.yaml for:").format(env=env)
+            )
+            for entry in disabled:
+                print(f"  - {entry}")
+            msg = t(
+                "  These contacts will not be notified on pipeline failure. Run: python scripts/setup_project.py -y"
+            )
+            print(f"{msg}\n")
+
+
+def _run_check(
+    args_variant: str | None,
+    repo_root: Path | None = None,
+) -> None:
+    # --check is consumed by CI/tooling, not read interactively — its output and
+    # exit codes must stay identical regardless of the caller's locale (AT-113).
+    with locale_override("en"):
+        pack_root = get_pack_root(repo_root)
+        variant = resolve_variant(args_variant, get_data_models_dir(repo_root))
+        resolve_pack_kind_for_check(variant, get_sourcesystem_dir(repo_root))
+        # Read site and datasets from existing configs so user-configured values
+        # (group names, location, dataset list) don't produce false positives.
+        site, datasets = _read_check_context(pack_root)
+        installed_ctx = list_installed_contextualization_modules(repo_root)
+
+        # Only validate config files that actually exist — skip missing ones silently.
+        all_errors: dict[str, list[str]] = {}
+        for env in ENVIRONMENTS:
+            path = pack_root / f"config.{env}.yaml"
+            if not path.exists():
+                continue
+            errs = check_config_file(path, variant, env, site, installed_ctx, datasets)
+            if errs:
+                all_errors[path.name] = errs
+
+        for path in find_env_configs(repo_root):
+            if (pack_root / path.name) in {pack_root / f"config.{e}.yaml" for e in ENVIRONMENTS}:
+                continue
+            env_guess = path.name.split(".")[1] if "." in path.name else "dev"
+            env_guess = env_guess if env_guess in ENVIRONMENTS else "dev"
+            errs = check_config_file(path, variant, env_guess, site, installed_ctx, datasets)
+            if errs:
+                all_errors[path.name] = errs
+
+        ctx_dir = get_contextualization_dir(repo_root)
+        stale_auth: list[Path] = []
+        for module_dir in list_installed_contextualization_modules(repo_root):
+            for rel_path in CONTEXTUALIZATION_REDUNDANT_AUTH[module_dir]:
+                if (ctx_dir / module_dir / rel_path).exists():
+                    stale_auth.append(ctx_dir / module_dir / rel_path)
+
+        missing_cdm_space = variant == "cdm" and not (get_pack_root(repo_root) / _CDM_INSTANCE_SPACE_REL_PATH).exists()
+
+        stale_diagram_annotation = diagram_annotation_stale_paths(repo_root)
+
+        if all_errors:
+            diverge = t("WARNING: Config file(s) diverge from variant '{variant}' base defaults:").format(
+                variant=variant
+            )
+            print(f"{diverge}\n")
+            for filename, errs in all_errors.items():
+                print(f"  {filename}")
+                for e in errs:
+                    print(e)
+            notice = t(
+                "This is expected once a project extends or upgrades beyond the "
+                "foundation base (e.g. a data-model version bump). Run "
+                "python scripts/setup_project.py -y to re-sync intentionally, or "
+                "ignore if the divergence is intentional."
+            )
+            print(f"\n  {notice}\n")
+        if stale_auth:
+            print(t("ERROR: Redundant auth file(s) still present (covered by cdf_project_foundation):"))
+            for p in stale_auth:
+                print(f"  {p.relative_to(ctx_dir.parent.parent)}")
+            print(f"\n  {t('Run: python scripts/setup_project.py -y')}")
+            sys.exit(1)
+        if missing_cdm_space:
+            missing_space_header = t("ERROR: CDM instance space file missing for variant '{variant}':").format(
+                variant=variant
+            )
+            print(f"{missing_space_header}\n  {_CDM_INSTANCE_SPACE_REL_PATH}")
+            print(f"\n  {t('Run: python scripts/setup_project.py -y')}")
+            sys.exit(1)
+        if stale_diagram_annotation:
+            print(t("ERROR: Redundant diagram-annotation file(s) still present (superseded by cdf_file_annotation):"))
+            for p in stale_diagram_annotation:
+                print(f"  {p.relative_to(get_pack_root(repo_root))}")
+            print(f"\n  {t('Run: python scripts/setup_project.py -y')}")
+            sys.exit(1)
+        _warn_disabled_notifications(repo_root, pack_root)
+        if not all_errors:
+            print(t("OK: All config file(s) match variant '{variant}'. No stale auth files.").format(variant=variant))
+
+
+# ── Entry point ────────────────────────────────────────────────────────────────
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="CI mode: exit 1 if any target config is out of sync with the installed variant",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip the confirmation prompt and apply immediately",
+    )
+    parser.add_argument(
+        "--variant",
+        choices=list(INGESTION_FOUNDATION_VARIABLES),
+        default=None,
+        help="Force the data model variant instead of auto-detecting it",
+    )
+    args = parser.parse_args()
+
+    if args.check:
+        _run_check(args.variant)
+    else:
+        _run_wizard(args.variant, args.yes)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n\n  {t('Cancelled by user.')}")
+        sys.exit(130)

@@ -1,0 +1,31 @@
+name: gp_cdf_read_cfihos_oil_gas_data_model
+sourceId: {{read_source_id}}
+
+capabilities:
+  - datasetsAcl:
+      actions:
+        - READ
+      scope:
+        idScope:
+          ids:
+            - {{dataset_external_id}}
+  - dataModelsAcl:
+      actions:
+        - READ
+      scope:
+        spaceIdScope:
+          spaceIds:
+            - cdf_cdm
+            - cdf_idm
+            - {{space}}
+            - {{search_space}}
+
+  - dataModelInstancesAcl:
+      actions:
+        - READ
+      scope:
+        spaceIdScope:
+          spaceIds:
+            - {{instance_space}}
+metadata:
+  origin: {{admin_user}}

@@ -1,5 +1,5 @@
 tenant_id = "f8edff44-22a3-4b56-952d-e7012e1a6a0a"
-applications = ["foo-app", "bar-app"]
+applications = ["foo-app", "bar-app", "baroo"]
 groups = [
   {
     name = "foo-group"

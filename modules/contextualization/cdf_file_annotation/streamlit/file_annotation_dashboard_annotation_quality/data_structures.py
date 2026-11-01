@@ -1,0 +1,353 @@
+from dataclasses import dataclass
+from enum import StrEnum
+
+import pandas as pd
+from cognite.client.data_classes.data_modeling.ids import ViewId
+from constants import FieldNames
+
+
+class NormalizedStatus(StrEnum):
+    REGULARLY_ANNOTATED = "Regularly Annotated"
+    AUTOMATICALLY_PROMOTED = "Automatically Promoted"
+    PATTERN_FOUND = "Pattern Found"
+    NO_MATCH = "No Match"
+    AMBIGUOUS = "Ambiguous"
+
+
+@dataclass
+class ViewPropertyConfig:
+    schema_space: str
+    external_id: str
+    version: str
+    instance_space: str | None = None
+
+    def as_view_id(self) -> ViewId:
+        return ViewId(space=self.schema_space, external_id=self.external_id, version=self.version)
+
+
+class AnnotationStatus(StrEnum):
+    APPROVED = "Approved"
+    SUGGESTED = "Suggested"
+    REJECTED = "Rejected"
+
+
+@dataclass
+class AnnotationCoverageData:
+    coverage_pct: float
+    actual_count: int
+    potential_count: int
+    total_possible: int
+
+
+@dataclass
+class AnnotationFrames:
+    actual_df: pd.DataFrame
+    potential_df: pd.DataFrame
+
+
+@dataclass
+class RawTablesConfig:
+    raw_db: str
+    raw_table_pattern_tags: str
+    raw_table_asset_tags: str
+    raw_table_file_tags: str
+    raw_table_pattern_cache: str
+    raw_manual_patterns_catalog: str
+
+    @classmethod
+    def from_dict(cls, d: dict | None):
+        if not isinstance(d, dict):
+            return cls(
+                raw_db=None,
+                raw_table_pattern_tags=None,
+                raw_table_asset_tags=None,
+                raw_table_file_tags=None,
+                raw_table_pattern_cache=None,
+                raw_manual_patterns_catalog=None,
+            )
+        return cls(
+            raw_db=d.get(FieldNames.RAW_DATABASE_CAMEL_CASE),
+            raw_table_pattern_tags=d.get(FieldNames.RAW_TABLE_DOC_PATTERN_CAMEL_CASE),
+            raw_table_asset_tags=d.get(FieldNames.RAW_TABLE_DOC_TAG_CAMEL_CASE),
+            raw_table_file_tags=d.get(FieldNames.RAW_TABLE_DOC_DOC_CAMEL_CASE),
+            raw_table_pattern_cache=d.get(FieldNames.RAW_TABLE_CACHE_CAMEL_CASE),
+            raw_manual_patterns_catalog=d.get(FieldNames.RAW_TABLE_MANUAL_PATTERNS_CATALOG_CAMEL_CASE),
+        )
+
+
+@dataclass
+class ApplyServiceConfig:
+    raw_db: str
+    raw_table_pattern_tags: str
+    raw_table_asset_tags: str
+    raw_table_file_tags: str
+    raw_manual_patterns_catalog: str
+    raw_table_pattern_cache: str
+
+    @classmethod
+    def from_dict(cls, d: dict | None):
+        if not isinstance(d, dict):
+            return cls(
+                raw_db=None,
+                raw_table_pattern_tags=None,
+                raw_table_asset_tags=None,
+                raw_table_file_tags=None,
+                raw_manual_patterns_catalog=None,
+                raw_table_pattern_cache=None,
+            )
+        return cls(
+            raw_db=d.get(FieldNames.RAW_DATABASE_CAMEL_CASE),
+            raw_table_pattern_tags=d.get(FieldNames.RAW_TABLE_DOC_PATTERN_CAMEL_CASE),
+            raw_table_asset_tags=d.get(FieldNames.RAW_TABLE_DOC_TAG_CAMEL_CASE),
+            raw_table_file_tags=d.get(FieldNames.RAW_TABLE_DOC_DOC_CAMEL_CASE),
+            raw_manual_patterns_catalog=d.get(FieldNames.RAW_TABLE_MANUAL_PATTERNS_CATALOG_CAMEL_CASE),
+            raw_table_pattern_cache=d.get(FieldNames.RAW_TABLE_CACHE_CAMEL_CASE),
+        )
+
+
+@dataclass
+class CacheServiceConfig:
+    raw_db: str
+    raw_table_pattern_tags: str
+    raw_table_asset_tags: str
+    raw_table_file_tags: str
+    raw_manual_patterns_catalog: str
+    raw_table_pattern_cache: str
+
+    @classmethod
+    def from_dict(cls, d: dict | None):
+        if not isinstance(d, dict):
+            return cls(
+                raw_db=None,
+                raw_table_pattern_tags=None,
+                raw_table_asset_tags=None,
+                raw_table_file_tags=None,
+                raw_manual_patterns_catalog=None,
+                raw_table_pattern_cache=None,
+            )
+
+        return cls(
+            raw_db=d.get(FieldNames.RAW_DATABASE_CAMEL_CASE),
+            raw_table_pattern_tags=d.get(FieldNames.RAW_TABLE_DOC_PATTERN_CAMEL_CASE),
+            raw_table_asset_tags=d.get(FieldNames.RAW_TABLE_DOC_TAG_CAMEL_CASE),
+            raw_table_file_tags=d.get(FieldNames.RAW_TABLE_DOC_DOC_CAMEL_CASE),
+            raw_manual_patterns_catalog=d.get(FieldNames.RAW_TABLE_MANUAL_PATTERNS_CATALOG_CAMEL_CASE),
+            raw_table_pattern_cache=d.get(FieldNames.RAW_TABLE_CACHE_CAMEL_CASE),
+        )
+
+
+@dataclass
+class LaunchFunctionConfig:
+    primary_scope_property: str
+    secondary_scope_property: str
+    asset_resource_property: str
+    file_resource_property: str
+    cache_service: CacheServiceConfig
+
+    @classmethod
+    def from_dict(cls, d: dict | None):
+        if not isinstance(d, dict):
+            return cls(
+                primary_scope_property=None,
+                secondary_scope_property=None,
+                asset_resource_property=None,
+                file_resource_property=None,
+                cache_service=CacheServiceConfig.from_dict(None),
+            )
+
+        cache_service = d.get(FieldNames.CACHE_SERVICE_CAMEL_CASE)
+
+        return cls(
+            primary_scope_property=d.get(FieldNames.PRIMARY_SCOPE_PROPERTY_CAMEL_CASE),
+            secondary_scope_property=d.get(FieldNames.SECONDARY_SCOPE_PROPERTY_CAMEL_CASE),
+            asset_resource_property=d.get(FieldNames.ASSET_RESOURCE_PROPERTY_CAMEL_CASE),
+            file_resource_property=d.get(FieldNames.FILE_RESOURCE_PROPERTY_CAMEL_CASE),
+            cache_service=CacheServiceConfig.from_dict(cache_service),
+        )
+
+
+@dataclass
+class FinalizeFunctionConfig:
+    apply_service: ApplyServiceConfig
+
+    @classmethod
+    def from_dict(cls, d: dict | None):
+        if not isinstance(d, dict):
+            return cls(apply_service=ApplyServiceConfig.from_dict(None))
+
+        apply_service = d.get(FieldNames.APPLY_SERVICE_CAMEL_CASE)
+
+        return cls(apply_service=ApplyServiceConfig.from_dict(apply_service))
+
+
+@dataclass
+class ExtractionPipelineConfig:
+    launch_function: LaunchFunctionConfig
+    finalize_function: FinalizeFunctionConfig
+    raw_tables: RawTablesConfig
+    file_view_cfg: ViewPropertyConfig | None = None
+    asset_view_cfg: ViewPropertyConfig | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict | None):
+        if not isinstance(d, dict):
+            return cls(
+                launch_function=LaunchFunctionConfig.from_dict(None),
+                finalize_function=FinalizeFunctionConfig.from_dict(None),
+                raw_tables=RawTablesConfig.from_dict(None),
+            )
+
+        if "parameters" in d and "data" in d:
+            parameters = d["parameters"]
+            views = d["data"]
+            # Must match the RAW_* constants in fn_file_annotation/fa_constants.py.
+            raw_tables = {
+                "rawDb": "raw_file_annotation",
+                "rawTableDocPattern": "annotation_documents_patterns",
+                "rawTableDocTag": "annotation_documents_tags",
+                "rawTableDocDoc": "annotation_documents_docs",
+                "rawManualPatternsCatalog": "manual_patterns_catalog",
+                "rawTableCache": "annotation_entities_cache",
+                "rawTablePromoteCache": "annotation_tags_cache",
+            }
+            file_view_data = views.get("fileView", {})
+            target_view_data = views.get("targetEntitiesView", {})
+            d = {
+                "launchFunction": {
+                    "primaryScopeProperty": parameters.get("primaryScopeProperty"),
+                    "secondaryScopeProperty": parameters.get("secondaryScopeProperty"),
+                    "fileResourceProperty": file_view_data.get("resourceProperty"),
+                    "targetEntityResourceProperty": target_view_data.get("resourceProperty"),
+                    "cacheService": raw_tables,
+                },
+                "finalizeFunction": {"applyService": raw_tables},
+                "rawTables": raw_tables,
+                "dataModelViews": {
+                    "fileView": file_view_data,
+                    "targetEntityView": target_view_data,
+                },
+            }
+
+        launch_function = d.get(FieldNames.LAUNCH_FUNCTION_CAMEL_CASE)
+        finalize_function = d.get(FieldNames.FINALIZE_FUNCTION_CAMEL_CASE)
+        raw_tables = d.get(FieldNames.RAW_TABLES_CAMEL_CASE)
+
+        data_model_views = d.get(FieldNames.DATA_MODEL_VIEWS_CAMEL_CASE, {}) or {}
+
+        def _build_view(cfg_dict):
+            if not cfg_dict:
+                return None
+            return ViewPropertyConfig(
+                schema_space=cfg_dict.get(FieldNames.SCHEMA_SPACE_CAMEL_CASE),
+                external_id=cfg_dict.get(FieldNames.EXTERNAL_ID_CAMEL_CASE),
+                version=str(cfg_dict.get(FieldNames.VERSION_CAMEL_CASE)),
+                instance_space=cfg_dict.get(FieldNames.INSTANCE_SPACE_CAMEL_CASE),
+            )
+
+        file_view = _build_view(data_model_views.get(FieldNames.FILE_VIEW_CAMEL_CASE))
+        asset_view = _build_view(data_model_views.get(FieldNames.ASSET_VIEW_CAMEL_CASE))
+
+        return cls(
+            launch_function=LaunchFunctionConfig.from_dict(launch_function),
+            finalize_function=FinalizeFunctionConfig.from_dict(finalize_function),
+            raw_tables=RawTablesConfig.from_dict(raw_tables),
+            file_view_cfg=file_view,
+            asset_view_cfg=asset_view,
+        )
+
+    @property
+    def file_resource_property(self) -> str | None:
+        value = getattr(self.launch_function, FieldNames.FILE_RESOURCE_PROPERTY_SNAKE_CASE, None)
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    @property
+    def asset_resource_property(self) -> str | None:
+        value = getattr(self.launch_function, FieldNames.ASSET_RESOURCE_PROPERTY_SNAKE_CASE, None)
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    @property
+    def primary_scope_property(self) -> str | None:
+        value = getattr(self.launch_function, FieldNames.PRIMARY_SCOPE_PROPERTY_SNAKE_CASE, None)
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    @property
+    def secondary_scope_property(self) -> str | None:
+        value = getattr(self.launch_function, FieldNames.SECONDARY_SCOPE_PROPERTY_SNAKE_CASE, None)
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    @property
+    def db_name(self) -> str | None:
+        cache = getattr(self.launch_function, FieldNames.CACHE_SERVICE_SNAKE_CASE, None)
+        apply = getattr(self.finalize_function, FieldNames.APPLY_SERVICE_SNAKE_CASE, None)
+
+        if cache and getattr(cache, FieldNames.RAW_DB_SNAKE_CASE, None):
+            return cache.raw_db
+        if apply and getattr(apply, FieldNames.RAW_DB_SNAKE_CASE, None):
+            return apply.raw_db
+        return None
+
+    @property
+    def raw_table_asset_tags(self) -> str | None:
+        cache = getattr(self.launch_function, FieldNames.CACHE_SERVICE_SNAKE_CASE, None)
+        apply = getattr(self.finalize_function, FieldNames.APPLY_SERVICE_SNAKE_CASE, None)
+
+        return (
+            getattr(self.raw_tables, FieldNames.RAW_TABLE_ASSET_TAGS_SNAKE_CASE, None)
+            or getattr(cache, FieldNames.RAW_TABLE_ASSET_TAGS_SNAKE_CASE, None)
+            or getattr(apply, FieldNames.RAW_TABLE_ASSET_TAGS_SNAKE_CASE, None)
+        )
+
+    @property
+    def raw_table_file_tags(self) -> str | None:
+        cache = getattr(self.launch_function, FieldNames.CACHE_SERVICE_SNAKE_CASE, None)
+        apply = getattr(self.finalize_function, FieldNames.APPLY_SERVICE_SNAKE_CASE, None)
+
+        return (
+            getattr(self.raw_tables, FieldNames.RAW_TABLE_FILE_TAGS_SNAKE_CASE, None)
+            or getattr(cache, FieldNames.RAW_TABLE_FILE_TAGS_SNAKE_CASE, None)
+            or getattr(apply, FieldNames.RAW_TABLE_FILE_TAGS_SNAKE_CASE, None)
+        )
+
+    @property
+    def raw_manual_patterns_catalog(self) -> str | None:
+        cache = getattr(self.launch_function, FieldNames.CACHE_SERVICE_SNAKE_CASE, None)
+        apply = getattr(self.finalize_function, FieldNames.APPLY_SERVICE_SNAKE_CASE, None)
+
+        return (
+            getattr(self.raw_tables, FieldNames.RAW_TABLE_MANUAL_PATTERNS_CATALOG_SNAKE_CASE, None)
+            or getattr(cache, FieldNames.RAW_TABLE_MANUAL_PATTERNS_CATALOG_SNAKE_CASE, None)
+            or getattr(apply, FieldNames.RAW_TABLE_MANUAL_PATTERNS_CATALOG_SNAKE_CASE, None)
+        )
+
+    @property
+    def raw_table_pattern_tags(self) -> str | None:
+        cache = getattr(self.launch_function, FieldNames.CACHE_SERVICE_SNAKE_CASE, None)
+        apply = getattr(self.finalize_function, FieldNames.APPLY_SERVICE_SNAKE_CASE, None)
+
+        return (
+            getattr(self.raw_tables, FieldNames.RAW_TABLE_PATTERN_TAGS_SNAKE_CASE, None)
+            or getattr(cache, FieldNames.RAW_TABLE_PATTERN_TAGS_SNAKE_CASE, None)
+            or getattr(apply, FieldNames.RAW_TABLE_PATTERN_TAGS_SNAKE_CASE, None)
+        )
+
+    @property
+    def raw_db(self) -> str | None:
+        cache = getattr(self.launch_function, FieldNames.CACHE_SERVICE_SNAKE_CASE, None)
+        apply = getattr(self.finalize_function, FieldNames.APPLY_SERVICE_SNAKE_CASE, None)
+
+        return (
+            getattr(self.raw_tables, FieldNames.RAW_DB_SNAKE_CASE, None)
+            or (getattr(cache, FieldNames.RAW_DB_SNAKE_CASE, None) if cache else None)
+            or (getattr(apply, FieldNames.RAW_DB_SNAKE_CASE, None) if apply else None)
+        )
+
+    @property
+    def raw_table_pattern_cache(self) -> str | None:
+        cache = getattr(self.launch_function, FieldNames.CACHE_SERVICE_SNAKE_CASE, None)
+        apply = getattr(self.finalize_function, FieldNames.APPLY_SERVICE_SNAKE_CASE, None)
+
+        return (
+            getattr(self.raw_tables, FieldNames.RAW_TABLE_PATTERN_CACHE_SNAKE_CASE, None)
+            or (getattr(cache, FieldNames.RAW_TABLE_PATTERN_CACHE_SNAKE_CASE, None) if cache else None)
+            or (getattr(apply, FieldNames.RAW_TABLE_PATTERN_CACHE_SNAKE_CASE, None) if apply else None)
+        )

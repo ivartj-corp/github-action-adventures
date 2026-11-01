@@ -1,0 +1,124 @@
+name: Toolkit PR Validate
+
+on:
+  pull_request:
+    branches:
+{{PR_BRANCHES}}
+
+concurrency:
+  group: toolkit-pr-${{ github.head_ref }}-${{ github.base_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  source-branch-guard:
+    name: Source branch guardrail
+    if: github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce promotion flow (main ← dev or hotfix/* only)
+        env:
+          HEAD: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          if [ "${HEAD}" != "dev" ] && [[ "${HEAD}" != hotfix/* ]]; then
+            echo "::error::PRs to 'main' must come from 'dev' or 'hotfix/*' only (head: ${HEAD})"
+            exit 1
+          fi
+          echo "Promotion flow OK: ${HEAD} -> main"
+
+  lint:
+    name: Lint (workflow YAML)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Install pyyaml
+        run: pip install pyyaml
+
+      - name: Verify project config is in sync
+        run: {{SETUP_PROJECT_CHECK_CMD}}
+
+      - name: Validate workflow YAML
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          for path in sorted(Path(".github/workflows").glob("*.yml")):
+              yaml.safe_load(path.read_text())
+              print(f"valid yaml: {path}")
+          PY
+
+      - name: Install pre-commit
+        if: hashFiles('.pre-commit-config.yaml') != ''
+        run: pip install pre-commit
+
+      - name: Config lint (Toolkit templates; skip strict YAML on modules)
+        if: hashFiles('.pre-commit-config.yaml') != ''
+        env:
+          SKIP: check-yaml,end-of-file-fixer,trailing-whitespace
+        run: |
+          mapfile -t FILES < <(git ls-files \
+            {{LINT_PATHS}})
+          if [ "${#FILES[@]}" -gt 0 ]; then
+            pre-commit run --files "${FILES[@]}"
+          fi
+
+      - name: No pre-commit config
+        if: hashFiles('.pre-commit-config.yaml') == ''
+        run: echo "No .pre-commit-config.yaml found; skipping pre-commit config lint."
+
+      - name: Lint functions (ruff, pyright)
+        run: |
+          set -euo pipefail
+          EXCLUDE='{{FUNCTION_LINT_EXCLUDE}}'
+          mapfile -t PY_FILES < <(git ls-files | grep -E '/functions/.*\.py$' | grep -Ev "$EXCLUDE" || true)
+          if [ "${#PY_FILES[@]}" -eq 0 ]; then
+            echo "No team-authored Python under functions/; skipping ruff and pyright."
+            exit 0
+          fi
+          pip install ruff pyright
+          mapfile -t REQS < <(git ls-files | grep -E '/functions/.*requirements\.txt$' | grep -Ev "$EXCLUDE" || true)
+          for req in "${REQS[@]}"; do
+            pip install -r "$req"
+          done
+          status=0
+          ruff check "${PY_FILES[@]}" || status=$?
+          mapfile -t FUNC_DIRS < <(
+            for f in "${PY_FILES[@]}"; do
+              dirname "$f" | sed -E 's|^(.*functions/[^/]+).*|\1|'
+            done | sort -u
+          )
+          for dir in "${FUNC_DIRS[@]}"; do
+            (cd "$dir" && pyright --pythonversion 3.13 .) || status=$?
+          done
+          exit "$status"
+
+  cdf-build:
+    name: cdf build
+    needs:
+      - source-branch-guard
+      - lint
+    if: >-
+      always() &&
+      needs.lint.result == 'success' &&
+      (github.base_ref == 'dev' || needs.source-branch-guard.result == 'success')
+    runs-on: ubuntu-latest
+    container:
+      image: {{TOOLKIT_IMAGE}}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Remove local .env
+        run: rm -f .env
+
+      - name: cdf build
+        run: |
+{{DRY_RUN_BUILD_SCRIPT}}

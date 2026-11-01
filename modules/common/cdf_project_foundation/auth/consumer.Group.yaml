@@ -1,0 +1,40 @@
+# Consumer persona — read-only.
+name: "{{ consumerGroupName }}"
+sourceId: "{{ consumerSourceId }}"
+metadata:
+  origin: cdf-project-templates
+capabilities:
+  - projectsAcl:
+      actions: [READ, LIST]
+      scope:
+        all: {}
+  - datasetsAcl:
+      actions: [READ]
+      scope:
+        idScope:
+          ids: {{ dataset }}
+  - dataModelsAcl:
+      # schemaSpace only: consumers need DM view definitions, not instance-space definitions
+      actions: [READ]
+      scope:
+        spaceIdScope:
+          spaceIds: ["{{ schemaSpace }}"]
+  - dataModelInstancesAcl:
+      actions: [READ]
+      scope:
+        spaceIdScope:
+          spaceIds: {{ instanceSpaces }}
+  - timeSeriesAcl:
+      actions: [READ]
+      scope:
+        datasetScope:
+          ids: {{ dataset }}
+  - filesAcl:
+      actions: [READ]
+      scope:
+        datasetScope:
+          ids: {{ dataset }}
+  - transformationsAcl:
+      actions: [READ]
+      scope:
+        all: {}

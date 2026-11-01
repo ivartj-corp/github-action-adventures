@@ -1,0 +1,87 @@
+# Producer persona — read/write on needed resources.
+name: "{{ producerGroupName }}"
+sourceId: "{{ producerSourceId }}"
+metadata:
+  origin: cdf-project-templates
+capabilities:
+  - projectsAcl:
+      actions: [READ, LIST]
+      scope:
+        all: {}
+  - groupsAcl:
+      actions: [LIST]
+      scope:
+        all: {}
+  - sessionsAcl:
+      actions: [CREATE]
+      scope:
+        all: {}
+  - datasetsAcl:
+      actions: [READ]
+      scope:
+        idScope:
+          ids: {{ dataset }}
+  - dataModelsAcl:
+      actions: [READ, WRITE]
+      scope:
+        spaceIdScope:
+          spaceIds: ["{{ schemaSpace }}", "{{ instanceSpace }}"]
+  - dataModelsAcl:
+      actions: [READ]
+      scope:
+        spaceIdScope:
+          spaceIds: {{ additionalSchemaSpaces }}
+  - dataModelInstancesAcl:
+      actions: [READ, WRITE, WRITE_PROPERTIES]
+      scope:
+        spaceIdScope:
+          spaceIds: {{ instanceSpaces }}
+  - dataModelInstancesAcl:
+      actions: [READ]
+      scope:
+        spaceIdScope:
+          spaceIds:
+            - cdf_cdm
+  - timeSeriesAcl:
+      actions: [READ, WRITE]
+      scope:
+        datasetScope:
+          ids: {{ dataset }}
+  - filesAcl:
+      actions: [READ, WRITE]
+      scope:
+        datasetScope:
+          ids: {{ dataset }}
+  - rawAcl:
+      actions: [READ, WRITE, LIST]
+      scope:
+        all: {}
+  - transformationsAcl:
+      actions: [READ, WRITE]
+      scope:
+        all: {}
+  - functionsAcl:
+      actions: [READ, WRITE]
+      scope:
+        all: {}
+  - entitymatchingAcl:
+      actions: [READ, WRITE]
+      scope:
+        all: {}
+  - workflowOrchestrationAcl:
+      actions: [READ, WRITE]
+      scope:
+        datasetScope:
+          ids: {{ dataset }}
+  - extractionPipelinesAcl:
+      actions: [READ, WRITE]
+      scope:
+        all: {}
+  - extractionConfigsAcl:
+      actions: [READ, WRITE]
+      scope:
+        all: {}
+  - extractionRunsAcl:
+      actions: [READ, WRITE]
+      scope:
+        all: {}

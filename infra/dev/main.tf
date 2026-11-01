@@ -1,68 +1,3 @@
-variable "tenant_id" {
-  type = string
-  nullable = false
-}
-
-variable "applications" {
-  type = set(string)
-  nullable = false
-  default = []
-}
-
-variable "groups" {
-  type = set(
-    object({
-      name = string
-      members = set(
-        object({
-          type = string
-          name = string
-        })
-      )
-    })
-  )
-  nullable = false
-  default = []
-
-  validation {
-    condition = alltrue(
-      flatten([
-        for group in var.groups : [
-          for member in group.members :
-          contains(["group", "application"], member.type)
-        ]
-      ])
-    )
-    error_message = "member type must be either 'group' or 'application'"
-  }
-
-  validation {
-    condition = alltrue(
-      flatten([
-        for group in var.groups : [
-          for member in group.members :
-          contains(var.applications, member.name)
-          if member.type == "application"
-        ]
-      ])
-    )
-    error_message = "members of type 'application' must passed in the 'applications' variable"
-  }
-
-  validation {
-    condition = alltrue(
-      flatten([
-        for group in var.groups : [
-          for member in group.members :
-          contains([for group in var.groups : group.name], member.name)
-          if member.type == "group"
-        ]
-      ])
-    )
-    error_message = "members of type 'group' must passed in the 'groups' variable"
-  }
-}
-
 // main.cf
 terraform {
   required_providers {
@@ -71,6 +6,15 @@ terraform {
       version = "3.10.0"
     }
   }
+
+//  backend "azurerm" {
+//    use_cli = true
+//    use_azuread_auth = true
+//    tenant_id = "f8edff44-22a3-4b56-952d-e7012e1a6a0a"
+//    storage_account_name = "ivartjterraformadventure"
+//    container_name = "terraform"
+//    key = "terraform.tfstate"
+//  }
 }
 
 provider "azuread" {

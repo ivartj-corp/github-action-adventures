@@ -1,0 +1,50 @@
+modules/datamodels/cfihos_oil_and_gas_extension_search:
+  - type:
+      resource_folder: data_modeling
+    identifier:
+      space: dm_sol_oil_and_gas_search
+    wildcard: true
+modules/datamodels/cfihos_oil_and_gas_extension:
+  - type:
+      resource_folder: data_modeling
+    identifier:
+      space: dm_dom_oil_and_gas
+    wildcard: true
+  - type:
+      resource_folder: data_sets
+      kind: DataSet
+    identifier:
+      externalId: ds_oil_and_gas_domain_model      
+modules/sourcesystem/cdf_sharepoint_data_dump:
+  - type:
+      resource_folder: workflows
+    identifier:
+      externalId: 'wf_diagram_annotation*'
+    wildcard: true
+modules/sourcesystem/cdf_sap_data_dump:
+  - type:
+      resource_folder: transformations
+      kind: Transformation
+    identifier:
+      externalId: tr_functional_location_all_to_functional_location
+  - type:
+      resource_folder: raw
+    identifier:
+      dbName: cfihos_oil_and_gas
+    wildcard: true
+modules/sourcesystem/cdf_pi_data_dump:
+  - type:
+      resource_folder: transformations
+      kind: Transformation
+    identifier:
+      externalId: tr_timeseries_all_to_timeseries_equipment_connection
+  - type:
+      resource_folder: raw
+    identifier:
+      dbName: cfihos_oil_and_gas
+    wildcard: true
+modules/common/cdf_project_foundation:
+  - type:
+      resource_folder: auth
+    identifier: {}
+    wildcard: true

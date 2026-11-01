@@ -1,0 +1,229 @@
+import time
+from collections.abc import Callable
+
+import pandas as pd
+import streamlit as st
+import yaml
+from cognite.client import CogniteClient
+from cognite.client.data_classes.data_modeling import NodeId, filters
+from cognite.client.exceptions import CogniteAPIError
+from constants import FieldNames
+from data_structures import CallerType, ViewPropertyConfig
+
+READ_BATCH_SIZE = 1000
+
+
+class DataFetcher:
+    @staticmethod
+    def _call_with_retries(
+        func: Callable[..., object], *args: object, max_attempts: int = 3, delay_seconds: float = 10.0, **kwargs: object
+    ) -> object:
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return func(*args, **kwargs)
+            except CogniteAPIError as e:
+                if e.code != 408 and e.code != 429:
+                    raise
+                if attempt >= max_attempts:
+                    raise
+                time.sleep(min(delay_seconds * (2 ** (attempt - 1)), 60.0))
+
+    @staticmethod
+    @st.cache_data(ttl=3600)
+    def find_pipelines(_client: CogniteClient, name_filter: str = "file_annotation") -> list[str]:
+        filtered_ids = [
+            pipeline.external_id
+            for pipelines in _client.extraction_pipelines(chunk_size=READ_BATCH_SIZE)
+            for pipeline in pipelines
+            if name_filter in pipeline.external_id
+        ]
+        return sorted(filtered_ids)
+
+    @staticmethod
+    @st.cache_data(ttl=3600)
+    def load_pipeline_config(_client: CogniteClient, pipeline_external_id: str) -> dict | None:
+        ep_configuration = DataFetcher._call_with_retries(
+            _client.extraction_pipelines.config.retrieve, external_id=pipeline_external_id
+        )
+        if not ep_configuration:
+            return None
+        return yaml.safe_load(ep_configuration.config)
+
+    @staticmethod
+    @st.cache_data(ttl=3600)
+    def fetch_annotation_states(_client: CogniteClient, extraction_pipeline_cfg) -> pd.DataFrame:
+        states = DataFetcher._read_annotation_states(_client, extraction_pipeline_cfg)
+        return states.rename(
+            columns={
+                FieldNames.ANNOTATION_STATUS_CAMEL_CASE: FieldNames.STATUS_LOWER_CASE,
+                FieldNames.ATTEMPT_COUNT_CAMEL_CASE: "retries",
+            }
+        )
+
+    @staticmethod
+    def _read_annotation_states(_client: CogniteClient, extraction_pipeline_cfg) -> pd.DataFrame:
+        annotation_state_view_cfg = extraction_pipeline_cfg.annotation_state_view_cfg
+        file_view_cfg = extraction_pipeline_cfg.file_view_cfg
+
+        annotation_space = annotation_state_view_cfg.instance_space if annotation_state_view_cfg is not None else None
+        annotation_sources = [annotation_state_view_cfg.as_view_id()] if annotation_state_view_cfg is not None else None
+
+        annotation_instances = (
+            instance
+            for instances in _client.data_modeling.instances(
+                chunk_size=READ_BATCH_SIZE, instance_type="node", space=annotation_space, sources=annotation_sources
+            )
+            for instance in instances
+        )
+
+        annotation_data: list[dict] = []
+        nodes_to_fetch: list[NodeId] = []
+
+        ann_view_obj = annotation_state_view_cfg.as_view_id() if annotation_state_view_cfg is not None else None
+        file_view_obj = file_view_cfg.as_view_id() if file_view_cfg is not None else None
+
+        for instance in annotation_instances:
+            node_row = {
+                FieldNames.EXTERNAL_ID_CAMEL_CASE: instance.external_id,
+                FieldNames.FILE_SPACE_CAMEL_CASE: instance.space,
+                FieldNames.CREATED_TIME_CAMEL_CASE: pd.to_datetime(instance.created_time, unit="ms"),
+                FieldNames.LAST_UPDATED_TIME_CAMEL_CASE: pd.to_datetime(instance.last_updated_time, unit="ms"),
+            }
+
+            props = {}
+
+            if ann_view_obj is not None and ann_view_obj in instance.properties:
+                props = instance.properties.get(ann_view_obj, {})
+
+            for prop_key, prop_value in props.items():
+                if prop_key == FieldNames.LINKED_FILE_CAMEL_CASE and prop_value:
+                    file_external_id = prop_value.get(FieldNames.EXTERNAL_ID_CAMEL_CASE)
+                    file_space = prop_value.get(FieldNames.SPACE_LOWER_CASE)
+
+                    node_row[FieldNames.FILE_EXTERNAL_ID_CAMEL_CASE] = file_external_id
+                    node_row[FieldNames.FILE_SPACE_CAMEL_CASE] = file_space
+
+                    if file_external_id and file_space:
+                        nodes_to_fetch.append(NodeId(space=file_space, external_id=file_external_id))
+
+                node_row[prop_key] = prop_value
+
+            annotation_data.append(node_row)
+
+        df_annotations = pd.DataFrame(annotation_data)
+
+        if df_annotations.empty or not nodes_to_fetch:
+            return df_annotations
+
+        unique_nodes_to_fetch = list({(n.space, n.external_id): n for n in nodes_to_fetch}.values())
+        file_sources = [file_view_cfg.as_view_id()] if file_view_cfg is not None else None
+        file_instances = DataFetcher._call_with_retries(
+            _client.data_modeling.instances.retrieve_nodes, nodes=unique_nodes_to_fetch, sources=file_sources
+        )
+
+        file_data: list[dict] = []
+
+        for instance in file_instances:
+            file_row = {
+                FieldNames.FILE_EXTERNAL_ID_CAMEL_CASE: instance.external_id,
+                FieldNames.FILE_SPACE_CAMEL_CASE: instance.space,
+            }
+
+            properties = {}
+
+            if file_view_obj is not None and file_view_obj in instance.properties:
+                properties = instance.properties.get(file_view_obj, {})
+
+            for prop_key, prop_value in properties.items():
+                file_row[f"file{prop_key.capitalize()}"] = (
+                    ", ".join(map(str, prop_value)) if isinstance(prop_value, list) else prop_value
+                )
+
+            file_data.append(file_row)
+
+        if not file_data:
+            return df_annotations
+
+        df_files = pd.DataFrame(file_data)
+        df_merged = pd.merge(
+            df_annotations,
+            df_files,
+            on=[FieldNames.FILE_EXTERNAL_ID_CAMEL_CASE, FieldNames.FILE_SPACE_CAMEL_CASE],
+            how="left",
+        )
+
+        for col in [FieldNames.CREATED_TIME_CAMEL_CASE, FieldNames.LAST_UPDATED_TIME_CAMEL_CASE]:
+            if col in df_merged.columns:
+                df_merged[col] = df_merged[col].dt.tz_localize("UTC")
+
+        return df_merged
+
+    @staticmethod
+    @st.cache_data(ttl=3600)
+    def fetch_pipeline_run_history(_client: CogniteClient, pipeline_external_id: str) -> list:
+        if not pipeline_external_id:
+            return []
+
+        runs = DataFetcher._call_with_retries(
+            _client.extraction_pipelines.runs.list, external_id=pipeline_external_id, limit=-1
+        )
+
+        return list(runs) if runs else []
+
+    @staticmethod
+    def fetch_function_logs(_client: CogniteClient, function_id: int, call_id: int) -> str:
+        try:
+            log_obj = DataFetcher._call_with_retries(_client.functions.calls.get_logs, call_id, function_id)
+        except CogniteAPIError:
+            return ""
+
+        text = (
+            log_obj.to_text(with_timestamps=False) if hasattr(log_obj, FieldNames.TO_TEXT_SNAKE_CASE) else str(log_obj)
+        )
+        return text or ""
+
+    @staticmethod
+    @st.cache_data(ttl=3600)
+    def fetch_files_by_function_call_id(
+        _client: CogniteClient, call_id: int, annotation_state_view: ViewPropertyConfig, caller_type: str | None = None
+    ) -> list:
+        if not call_id or annotation_state_view is None:
+            return []
+
+        mapping = {
+            CallerType.LAUNCH: FieldNames.LAUNCH_FUNCTION_CALL_ID_CAMEL_CASE,
+            CallerType.FINALIZE: FieldNames.FINALIZE_FUNCTION_CALL_ID_CAMEL_CASE,
+            CallerType.PREPARE: FieldNames.PREPARE_FUNCTION_CALL_ID_CAMEL_CASE,
+            CallerType.PROMOTE: FieldNames.PROMOTE_FUNCTION_CALL_ID_CAMEL_CASE,
+        }
+
+        view_id = annotation_state_view.as_view_id()
+
+        if caller_type and caller_type in mapping:
+            prop = mapping[caller_type]
+            call_id_filter = filters.Equals(annotation_state_view.as_property_ref(prop), call_id)
+        else:
+            return []
+
+        try:
+            file_external_ids = []
+
+            for instances in _client.data_modeling.instances(
+                chunk_size=READ_BATCH_SIZE,
+                instance_type="node",
+                space=annotation_state_view.instance_space,
+                sources=[view_id],
+                filter=call_id_filter,
+            ):
+                for instance in instances:
+                    props = instance.properties.get(view_id, {}) if view_id in instance.properties else {}
+                    linked_file = props.get(FieldNames.LINKED_FILE_CAMEL_CASE, {}) or {}
+                    file_external_id = linked_file.get(FieldNames.EXTERNAL_ID_CAMEL_CASE)
+                    if file_external_id:
+                        file_external_ids.append(str(file_external_id))
+
+            return file_external_ids
+        except CogniteAPIError:
+            return []
