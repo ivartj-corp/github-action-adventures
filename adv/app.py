@@ -15,6 +15,7 @@ import re
 import pydantic
 import fnmatch
 import logging
+import itertools
 
 
 app = typer.Typer()
@@ -362,7 +363,14 @@ def tk_build_check(
                 )
 
     for module_lineage in build_lineage.moduleLineage:
-        grants = module2grants[module_lineage.moduleId]
+        top_level_module = "/".join(module_lineage.moduleId.split("/")[:2])
+        grants = list(
+            itertools.chain.from_iterable(
+                grants
+                for module_id, grants in module2grants.items()
+                if module_id == top_level_module or module_id.startswith(top_level_module + "/")
+            )
+        )
         for resource_lineage in module_lineage.resourceLineage:
             authorized_resource = False
             resource_type = {
