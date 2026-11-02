@@ -7,15 +7,18 @@ import dataclasses
 from dataclasses import dataclass
 import subprocess
 import json
+from collections import defaultdict
 from .util.codeowners import CodeOwners
 from .util import config_util
 import yaml
 import re
 import pydantic
 import fnmatch
+import logging
 
 
 app = typer.Typer()
+logger = logging.getLogger(pathlib.Path(__file__).name)
 
 
 @dataclass
@@ -183,23 +186,23 @@ def config_diff(
 
 @app.command()
 def tk_build_check(
-        build_dir: typing.Annotated[
-            pathlib.Path | None,
+        build_dir_str: typing.Annotated[
+            str,
             typer.Option(
+                "--build-dir",
                 help="Directory containing resources built with Cognite Toolkit",
             )
-        ] = None,
-        module_authorization_file: typing.Annotated[
-            pathlib.Path | None,
+        ] = "build/",
+        modules_config_dir_str: typing.Annotated[
+            str,
             typer.Option(
+                "--module-authorization-dir",
                 help="File specifying which modules are allowed to deploy which types of resources",
             )
-        ] = None,
+        ] = "module-authorization/",
 ) -> None:
-    if build_dir is None:
-        build_dir = pathlib.Path("./build")
-    if module_authorization_file is None:
-        module_authorization_file = pathlib.Path("./module_authorization.yaml")
+    build_dir = pathlib.Path(build_dir_str)
+    modules_config_dir = pathlib.Path(modules_config_dir_str)
 
     build_lineage_object: object = yaml.safe_load((build_dir / "lineage.yaml").read_text())  # pyright: ignore[reportAny]
     class BuildLineage(pydantic.BaseModel):
@@ -217,73 +220,188 @@ def tk_build_check(
         identifier: dict[str, str]
     build_lineage = BuildLineage.model_validate(build_lineage_object)
 
-    module_authorization_object: object = yaml.safe_load(module_authorization_file.read_text())  # pyright: ignore[reportAny]
-    class ModuleAuthorization(pydantic.BaseModel):
-        type: dict[typing.Literal["resource_folder", "kind"], str]
+
+    @dataclass
+    class ResourceWildcard:
+        type: dict[typing.Literal["resource_folder", "kind"], str | None]
         identifier: dict[str, str]
-        wildcard: bool = False
-    prefix2authorizations = pydantic.TypeAdapter(dict[str, list[ModuleAuthorization]]).validate_python(module_authorization_object)
+        properties: dict[str, str] | None = None
+    @dataclass
+    class AuthzGrant:
+        source_path: pathlib.Path
+        resource_wildcard: ResourceWildcard
+    modules = [module_lineage.moduleId for module_lineage in build_lineage.moduleLineage]
+    module2grants: dict[str, list[AuthzGrant]] = {module: [] for module in modules}
+
+    all_resource_types: frozenset[tuple[str, str]] = frozenset(
+        (resource_lineage.type.resource_folder, resource_lineage.type.kind)
+        for module_lineage in build_lineage.moduleLineage
+        for resource_lineage in module_lineage.resourceLineage
+    )
+    space_scoped_types = frozenset(
+        (resource_folder, kind)
+        for resource_folder, kind in all_resource_types
+        if resource_folder == "data_modeling"
+    ) - {("data_modeling", "Space")}
+    dataset_scoped_types = frozenset({
+        ("transformations", "Transformation"),
+        ("extraction_pipelines", "ExtractionPipeline"),
+        ("workflows", "Workflow"),
+    })
+    workflow_scoped_types = frozenset(
+        (resource_folder, kind)
+        for resource_folder, kind in all_resource_types
+        if resource_folder == "workflows"
+    ) - {("workflows", "Workflow")}
+
+    unscoped_resource_types = all_resource_types \
+        - space_scoped_types \
+        - dataset_scoped_types \
+        - workflow_scoped_types
+
+    auth_resource_types = frozenset(
+        (resource_folder, kind)
+        for resource_folder, kind in all_resource_types
+        if resource_folder == "auth"
+    )
+
+    # Grant all modules the ability to deploy any unscoped resource that do not control authorization.
+    # We will check elsewhere that the resource does not already exist in a different module.
+    for resource_folder, kind in unscoped_resource_types - auth_resource_types:
+        for grants in module2grants.values():
+            grants.append(
+                AuthzGrant(
+                    resource_wildcard=ResourceWildcard(
+                        type={
+                            "resource_folder": resource_folder,
+                            "kind": kind,
+                        },
+                        identifier={},
+                    ),
+                    source_path=pathlib.Path(__file__),
+                )
+            )
 
     for module_lineage in build_lineage.moduleLineage:
-        module_id = module_lineage.moduleId
-        implicit_authorizations: list[ModuleAuthorization] = []
+        module = module_lineage.moduleId
         for resource_lineage in module_lineage.resourceLineage:
-            type = resource_lineage.type
-            match type.resource_folder, type.kind:
-                case "raw", "Database":
-                    for db_name_key in "dbName", "name":
-                        implicit_authorizations.append(
-                            ModuleAuthorization(
-                                type={"resource_folder": "raw"},
-                                identifier={
-                                    db_name_key: resource_lineage.identifier["name"]
+            resource_folder = resource_lineage.type.resource_folder
+            kind = resource_lineage.type.kind
+            match resource_folder, kind:
+                case "data_modeling", "Space":
+                    module2grants[module].extend(
+                        AuthzGrant(
+                            source_path=pathlib.Path(resource_lineage.sourceFile),
+                            resource_wildcard=ResourceWildcard(
+                                type={
+                                    "resource_folder": resource_folder,
+                                    "kind": kind,
                                 },
-                                wildcard=True
+                                identifier={
+                                    "space": resource_lineage.identifier["space"],
+                                },
                             )
                         )
-                case "data_modeling", "Space":
-                    implicit_authorizations.append(
-                        ModuleAuthorization(
-                            type={"resource_folder": "data_modeling"},
-                            identifier={
-                                "space": resource_lineage.identifier["space"]
-                            },
-                            wildcard=True
-                        )
+                        for resource_folder, kind in space_scoped_types
                     )
-                case _, _:
+                case "data_sets", "DataSet":
+                    module2grants[module].extend(
+                        AuthzGrant(
+                            source_path=pathlib.Path(resource_lineage.sourceFile),
+                            resource_wildcard=ResourceWildcard(
+                                type={
+                                    "resource_folder": resource_folder,
+                                    "kind": kind,
+                                },
+                                identifier={},
+                                properties={
+                                    "dataSetExternalId": resource_lineage.identifier["externalId"],
+                                },
+                            ),
+                        )
+                        for resource_folder, kind in dataset_scoped_types
+                    )
+                case "workflows", "Workflow":
+                    module2grants[module].extend(
+                        AuthzGrant(
+                            source_path=pathlib.Path(resource_lineage.sourceFile),
+                            resource_wildcard=ResourceWildcard(
+                                type={
+                                    "resource_folder": resource_folder,
+                                    "kind": kind,
+                                },
+                                identifier={},
+                                properties={
+                                    "workflowExternalId": resource_lineage.identifier["externalId"],
+                                },
+                            ),
+                        )
+                        for resource_folder, kind in workflow_scoped_types
+                    )
+                case _:
                     pass
-        authorizations: list[ModuleAuthorization] = [
-            authorization
-            for prefix, authorizations in prefix2authorizations.items()
-            if module_id.startswith(prefix)
-            for authorization in authorizations
-        ] + implicit_authorizations
+
+    class AuthzFileEntry(pydantic.BaseModel):
+        resources: list[ResourceWildcard]
+        modules: list[str]
+    for authz_file_path in modules_config_dir.glob("*/authz.yaml"):
+        authz_file_entries = pydantic.TypeAdapter(list[AuthzFileEntry]).validate_python(authz_file_path.read_text())
+        for entry in authz_file_entries:
+            recipient_modules = [
+                module
+                for module in modules
+                if any(module.startswith(module_prefix) for module_prefix in entry.modules)
+            ]
+            for recipient_module in recipient_modules:
+                module2grants[recipient_module].extend(
+                    AuthzGrant(
+                        source_path=authz_file_path,
+                        resource_wildcard=resource_wildcard
+                    )
+                    for resource_wildcard in entry.resources
+                )
+
+    for module_lineage in build_lineage.moduleLineage:
+        grants = module2grants[module_lineage.moduleId]
         for resource_lineage in module_lineage.resourceLineage:
             authorized_resource = False
-            for authorization in authorizations:
-                if not authorization.wildcard and frozenset(authorization.type.keys()) != frozenset(resource_lineage.type.model_dump().keys()):
+            resource_type = {
+                "resource_folder": resource_lineage.type.resource_folder,
+                "kind": resource_lineage.type.kind,
+            }
+            resource_id = resource_lineage.identifier
+            for grant in grants:
+                if any(
+                        grant_type_value != resource_type.get(type_key)
+                        for type_key, grant_type_value in grant.resource_wildcard.type.items()
+                ):
                     continue
-                for type_key, auth_type_value in authorization.type.items():
-                    resource_type_value: str = getattr(resource_lineage.type, type_key)  # pyright: ignore[reportAny]
-                    if authorization.wildcard and not fnmatch.fnmatchcase(resource_type_value, auth_type_value):
-                        continue
-                    elif resource_type_value != auth_type_value:
-                        continue
-                if not authorization.wildcard and frozenset(authorization.identifier.keys()) != frozenset(resource_lineage.identifier.keys()):
+                if any(
+                        resource_id.get(id_key) != grant_id_value
+                        for id_key, grant_id_value in grant.resource_wildcard.identifier.items()
+                ):
                     continue
-                for id_key, auth_id_value in authorization.identifier.items():
-                    resource_id_value = resource_lineage.identifier.get(id_key)
-                    if resource_id_value is None:
+                if (properties := grant.resource_wildcard.properties) is not None:
+                    resource_manifest: object | None = yaml.safe_load((pathlib.Path(build_dir) / resource_lineage.builtFile).read_text())  # pyright: ignore[reportAny]
+                    if not isinstance(resource_manifest, dict):
                         continue
-                    elif authorization.wildcard and not fnmatch.fnmatchcase(resource_id_value, auth_id_value):
+                    if any(
+                        resource_manifest.get(property) != grant_property_value  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+                        for property, grant_property_value in properties.items()
+                    ):
                         continue
-                    elif resource_id_value != auth_id_value:
-                        continue
+                logger.info(f"{resource_lineage.sourceFile} authorized by {grant.source_path}")
                 authorized_resource = True
-                break
             if not authorized_resource:
-                raise Exception(f"module {module_id} is not authorized to deploy {resource_lineage}")
+                logger.error(f"{resource_lineage.sourceFile} not authorized")
+
+
+@app.callback()
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+    )
+
 
 if __name__ == "__main__":
     app()
