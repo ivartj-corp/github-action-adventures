@@ -1,0 +1,5 @@
+- resources:
+    - type:
+        resource_folder: auth
+  modules:
+    - modules/common

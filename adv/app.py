@@ -200,7 +200,7 @@ def tk_build_check(
                 "--module-authorization-dir",
                 help="File specifying which modules are allowed to deploy which types of resources",
             )
-        ] = "module-authorization/",
+        ] = "modules-config/",
 ) -> None:
     build_dir = pathlib.Path(build_dir_str)
     modules_config_dir = pathlib.Path(modules_config_dir_str)
@@ -225,8 +225,8 @@ def tk_build_check(
     @dataclass
     class ResourceWildcard:
         type: dict[typing.Literal["resource_folder", "kind"], str | None]
-        identifier: dict[str, str]
-        properties: dict[str, str] | None = None
+        identifier: dict[str, str] = dataclasses.field(default_factory=dict)
+        properties: dict[str, str] = dataclasses.field(default_factory=dict)
     @dataclass
     class AuthzGrant:
         source_path: pathlib.Path
@@ -283,6 +283,7 @@ def tk_build_check(
                 )
             )
 
+    # Add grants for resources scoped to scopes in the module
     for module_lineage in build_lineage.moduleLineage:
         module = module_lineage.moduleId
         for resource_lineage in module_lineage.resourceLineage:
@@ -342,12 +343,47 @@ def tk_build_check(
                 case _:
                     pass
 
+    # Add explicit grants
     class AuthzFileEntry(pydantic.BaseModel):
         resources: list[ResourceWildcard]
         modules: list[str]
-    for authz_file_path in modules_config_dir.glob("*/authz.yaml"):
-        authz_file_entries = pydantic.TypeAdapter(list[AuthzFileEntry]).validate_python(authz_file_path.read_text())
+    for authz_file_path in modules_config_dir.glob("**/authz.yaml"):
+        authz_file_object = yaml.safe_load(authz_file_path.read_text())  # pyright: ignore[reportAny]
+        authz_file_entries = pydantic.TypeAdapter(list[AuthzFileEntry]).validate_python(authz_file_object)
+        granting_module = str(pathlib.PosixPath("modules") / authz_file_path.parent.relative_to(modules_config_dir))
+        granting_module_grants = list(
+            itertools.chain.from_iterable(
+                grants
+                for module_id, grants in module2grants.items()
+                if module_id == granting_module or module_id.startswith(granting_module + "/")
+            )
+        )
         for entry in authz_file_entries:
+            for resource_wildcard in entry.resources:
+                authorized_grant = False
+                if granting_module == "modules":
+                    logger.info(f"{authz_file_path} grant for {resource_wildcard} authorized by {__file__}")
+                    authorized_grant = True
+                for grant in granting_module_grants:
+                    if any(
+                            grant_type_value != resource_wildcard.type.get(type_key)
+                            for type_key, grant_type_value in grant.resource_wildcard.type.items()
+                    ):
+                        continue
+                    if any(
+                            grant_id_value != resource_wildcard.identifier.get(id_key)
+                            for id_key, grant_id_value in grant.resource_wildcard.identifier.items()
+                    ):
+                        continue
+                    if any(
+                            grant_property_value != resource_wildcard.properties.get(property_key)
+                            for property_key, grant_property_value in grant.resource_wildcard.properties
+                    ):
+                        continue
+                    logger.info(f"{authz_file_path} grant for {resource_wildcard} authorized by {grant.source_path}")
+                    authorized_grant = True
+                if not authorized_grant:
+                    logger.info(f"{authz_file_path} grant for {resource_wildcard} not authorized")
             recipient_modules = [
                 module
                 for module in modules
@@ -389,7 +425,7 @@ def tk_build_check(
                         for id_key, grant_id_value in grant.resource_wildcard.identifier.items()
                 ):
                     continue
-                if (properties := grant.resource_wildcard.properties) is not None:
+                if len(properties := grant.resource_wildcard.properties) != 0:
                     resource_manifest: object | None = yaml.safe_load((pathlib.Path(build_dir) / resource_lineage.builtFile).read_text())  # pyright: ignore[reportAny]
                     if not isinstance(resource_manifest, dict):
                         continue
